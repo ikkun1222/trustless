@@ -36,8 +36,8 @@ type runResult struct {
 func Run(args []string, be backend.Backend, cfg *config.Config) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	var secrets stringSlice
-	fs.Var(&secrets, "s", "Credential key to inject (repeatable)")
-	fs.Var(&secrets, "secret", "Credential key to inject (repeatable)")
+	fs.Var(&secrets, "s", "Credential key to inject (repeatable, format: KEY or KEY:ENVNAME)")
+	fs.Var(&secrets, "secret", "Credential key to inject (repeatable, format: KEY or KEY:ENVNAME)")
 	jsonOutput := fs.Bool("json", false, "Output results as JSON")
 	timeoutStr := fs.String("timeout", "", "Subprocess timeout (e.g. \"30s\", \"5m\")")
 
@@ -83,13 +83,20 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 
 	env := os.Environ()
 	var credValues []string
-	for _, key := range secrets {
-		val, err := be.Resolve(ctx, key)
+	for _, spec := range secrets {
+		var secretKey, envName string
+		if colon := strings.Index(spec, ":"); colon >= 0 {
+			secretKey = spec[:colon]
+			envName = spec[colon+1:]
+		} else {
+			secretKey = spec
+			envName = envVarName(spec)
+		}
+		val, err := be.Resolve(ctx, secretKey)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(2)
 		}
-		envName := envVarName(key)
 		env = append(env, envName+"="+val)
 		credValues = append(credValues, val)
 	}

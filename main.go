@@ -43,6 +43,8 @@ func main() {
 		proxy.Run(args, be, cfg)
 	case "config":
 		runConfig(args, cfg, cfgPath)
+	case "version":
+		fmt.Println("trustless v0.1.0")
 	case "completion":
 		runCompletion(args)
 	default:
@@ -60,6 +62,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  trustless run        Run command with injected credentials")
 	fmt.Fprintln(os.Stderr, "  trustless proxy      Start credential injection proxy")
 	fmt.Fprintln(os.Stderr, "  trustless config     Manage configuration")
+	fmt.Fprintln(os.Stderr, "  trustless version    Show version information")
 	fmt.Fprintln(os.Stderr, "  trustless completion Generate shell completion script")
 }
 
