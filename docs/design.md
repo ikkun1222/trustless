@@ -210,6 +210,86 @@ patterns = [
 - **Full audit trail** — basic logging only; SIEM export is future work
 - **Hardware-backed key storage** — relies on GPG keyring security
 
+## OpenCode Implementation Steps
+
+Each phase is decomposed into atomic steps executed via `opencode run`.
+
+### Step A — `trustless run` skeleton + subprocess execution
+
+**Files to create:** `internal/run/command.go`
+**Files to modify:** `main.go`
+
+Implements:
+- `trustless run -s KEY1 -s KEY2 -- cmd [args...]` subcommand dispatch in main.go
+- Flag parsing with `flag`: `-s` (repeatable string slice), `--json`, `--timeout` (duration string)
+- Subprocess execution: resolve credentials from backend → set on `Cmd.Env` → spawn → capture stdout/stderr
+- `-s` injects credential value as env var named by the last path segment (`iria/api/xai` → `XAI`)
+- `--json` outputs `{"exit_code": N, "stdout": "...", "stderr": "..."}`
+- `--timeout` sets context deadline
+- **No sanitization yet** — raw output returned
+- Default output: raw stdout/stderr to terminal, preserving subprocess behavior
+
+**Acceptance:** `trustless run -s iria/api/xai -- curl -s -H "Authorization: Bearer $(printenv XAI)" https://api.x.ai/...` (エコーはされるがcredentialがsubprocessで使える)
+
+### Step B — Output scanner (`internal/scanner/`)
+
+**Files to create:** `internal/scanner/scanner.go`
+
+Implements:
+- `scanner.Scanner` struct with `AddPattern(re)` and `Scan(input []byte) []byte`
+- Default patterns: GitHub tokens (`ghp_`), OpenAI keys (`sk-`), Bearer tokens, AWS keys, generic `key=value` patterns
+- `ScanKnown(input []byte) []byte` — applies all default patterns
+- Also detects and redacts exact injected values (passed at scan time)
+- Redaction replaces matched content with `[REDACTED]`
+- Thread-safe (patterns are read-only after init)
+
+**Acceptance:** `scanner.ScanKnown([]byte("ghp_abc123def456"))` returns `[REDACTED]`
+
+### Step C — Integrate scanner into `trustless run`
+
+**Files to modify:** `internal/run/command.go`
+
+Implements:
+- Scanner initialization with default patterns + config patterns
+- After subprocess output capture, run scanner on stdout + stderr
+- `--sanitize` flag (default: true, from config)
+- Also redact the exact injected credential values if they appear in output
+- `--sanitize-policy <file>` for custom pattern file
+
+**Acceptance:** `trustless run -s iria/api/xai -- sh -c 'echo $XAI'` outputs `[REDACTED]` instead of the actual key
+
+### Step D — `trustless proxy`
+
+**Files to create:** `internal/proxy/proxy.go`
+**Files to modify:** `main.go`
+
+Implements:
+- `trustless proxy start` subcommand
+- Local HTTP forward proxy using `httputil.ReverseProxy`
+- Placeholder substitution: `__KEY_NAME__` in request headers/body gets replaced with resolved credential
+- Domain allowlisting (from config)
+- Unix socket support (`--unix-socket <path>`)
+- `--port` flag (default: 8080)
+- Graceful shutdown on SIGINT/SIGTERM
+
+**Acceptance:** `HTTPS_PROXY=http://127.0.0.1:8080` curl with `__GITHUB_TOKEN__` header gets proxied
+
+### Step E — Completion
+
+Implements:
+- Shell completion script generation
+- `trustless config set <key> <value>` subcommand
+- `--help` enrichment on all commands
+- Error message polish (consistent exit codes)
+- README.md
+
+### Implementation Principles for Each Step
+
+1. Every step starts with `go build` to verify compilation
+2. Test manually with the acceptance criteria shown
+3. Commit after each step with a descriptive message
+4. If opencode produces broken code, fix manually and retry
+
 ## Implementation Phases
 
 ### Phase 1: Project Skeleton + `pass` Backend + `secret` Commands
