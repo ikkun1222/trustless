@@ -283,6 +283,18 @@ Implements:
 - Error message polish (consistent exit codes)
 - README.md
 
+### Step F1 — `-s KEY:ENVNAME` override + `version`
+
+**Files to modify:** `internal/run/command.go`, `main.go`
+
+Implements:
+- `-s iria/api/xai:MY_XAI_KEY` syntax for explicit env var naming
+- Backward-compatible: `-s iria/api/xai` still auto-derives `XAI`
+- `trustless version` subcommand
+- Passthrough mode now sets `cmd.Stdin = os.Stdin` (fixes MCP server compatibility where stdio transport requires stdin forwarding)
+
+**Acceptance:** `trustless run -s iria/api/xai:MY_XAI_KEY -- sh -c 'echo $MY_XAI_KEY'` outputs `[REDACTED]`
+
 ### Implementation Principles for Each Step
 
 1. Every step starts with `go build` to verify compilation

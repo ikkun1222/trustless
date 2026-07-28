@@ -168,6 +168,7 @@ func runPassthrough(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValue
 		os.Stderr.Write(s.ScanWithValues(stderrBuf.Bytes(), extraValues))
 		return
 	}
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
