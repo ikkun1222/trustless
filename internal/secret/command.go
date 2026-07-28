@@ -47,10 +47,14 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  trustless secret list")
-	fmt.Fprintln(os.Stderr, "  trustless secret get <key>")
-	fmt.Fprintln(os.Stderr, "  trustless secret set <key> [value]")
+	fmt.Fprintln(os.Stderr, "Usage: trustless secret <command> [<args>]")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Commands:")
+	fmt.Fprintln(os.Stderr, "  list              List all available credential keys")
+	fmt.Fprintln(os.Stderr, "  get    <key>      Retrieve a credential value")
+	fmt.Fprintln(os.Stderr, "  set    <key>      Store a new credential (prompts for value)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Use 'pass' directly for advanced credential management.")
 }
 
 func list(be backend.Backend) {

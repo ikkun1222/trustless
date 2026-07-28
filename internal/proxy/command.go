@@ -156,7 +156,7 @@ func (p *Proxy) listen() (net.Listener, error) {
 
 func Run(args []string, be backend.Backend, cfg *config.Config) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: trustless proxy start")
+		printUsage()
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -170,6 +170,22 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 
 func start(args []string, be backend.Backend, cfg *config.Config) {
 	fs := flag.NewFlagSet("proxy-start", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: trustless proxy start [flags]")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Start a local HTTP forward proxy that substitutes credential placeholders.")
+		fmt.Fprintln(os.Stderr, "Placeholders are resolved from the pass store in real-time.")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Placeholder format: __KEY_NAME__ (e.g. __GITHUB_TOKEN__, __XAI__)")
+		fmt.Fprintln(os.Stderr, "Resolution: lowercase(KEY_NAME) -> pass key, fallback: iria/api/lowercase(KEY_NAME)")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Flags:")
+		fs.PrintDefaults()
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Examples:")
+		fmt.Fprintln(os.Stderr, "  trustless proxy start --port 8080")
+		fmt.Fprintln(os.Stderr, "  HTTPS_PROXY=http://127.0.0.1:8080 curl -H \"Authorization: Bearer __XAI__\" https://api.x.ai/v1/models")
+	}
 	port := fs.Int("port", cfg.Proxy.Port, "listen port")
 	unixSocket := fs.String("unix-socket", "", "unix socket path")
 
@@ -191,4 +207,22 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 		fmt.Fprintf(os.Stderr, "trustless proxy error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func printUsage() {
+	fmt.Fprintln(os.Stderr, "Usage: trustless proxy start [flags]")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Start a local HTTP forward proxy that substitutes credential placeholders.")
+	fmt.Fprintln(os.Stderr, "Placeholders are resolved from the pass store in real-time.")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Placeholder format: __KEY_NAME__ (e.g. __GITHUB_TOKEN__, __XAI__)")
+	fmt.Fprintln(os.Stderr, "Resolution: lowercase(KEY_NAME) -> pass key, fallback: iria/api/lowercase(KEY_NAME)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Flags:")
+	fmt.Fprintln(os.Stderr, "  --port <n>           Listen port (default: 8080)")
+	fmt.Fprintln(os.Stderr, "  --unix-socket <path>  Listen on Unix socket instead of TCP")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Examples:")
+	fmt.Fprintln(os.Stderr, "  trustless proxy start --port 8080")
+	fmt.Fprintln(os.Stderr, "  HTTPS_PROXY=http://127.0.0.1:8080 curl -H \"Authorization: Bearer __XAI__\" https://api.x.ai/v1/models")
 }

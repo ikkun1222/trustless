@@ -36,17 +36,27 @@ type runResult struct {
 func Run(args []string, be backend.Backend, cfg *config.Config) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	var secrets stringSlice
-	fs.Var(&secrets, "s", "credential key to inject (repeatable)")
-	fs.Var(&secrets, "secret", "credential key to inject (repeatable)")
-	jsonOutput := fs.Bool("json", false, "output results as JSON")
-	timeoutStr := fs.String("timeout", "", "subprocess timeout (e.g. \"30s\", \"5m\")")
+	fs.Var(&secrets, "s", "Credential key to inject (repeatable)")
+	fs.Var(&secrets, "secret", "Credential key to inject (repeatable)")
+	jsonOutput := fs.Bool("json", false, "Output results as JSON")
+	timeoutStr := fs.String("timeout", "", "Subprocess timeout (e.g. \"30s\", \"5m\")")
 
-	sanitizeFlag := fs.Bool("sanitize", true, "enable output sanitization")
-	sanitizePolicy := fs.String("sanitize-policy", "", "path to file with custom redaction patterns")
+	sanitizeFlag := fs.Bool("sanitize", true, "Enable output sanitization (default: true)")
+	sanitizePolicy := fs.String("sanitize-policy", "", "Path to custom redaction patterns file")
 
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: trustless run [flags] [--] <command> [args...]")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Run a command with credentials injected as environment variables.")
+		fmt.Fprintln(os.Stderr, "Credentials are resolved from the pass store and set on the subprocess.")
+		fmt.Fprintln(os.Stderr, "Output is scanned for credential patterns and redacted.")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Flags:")
 		fs.PrintDefaults()
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Examples:")
+		fmt.Fprintln(os.Stderr, "  trustless run -s iria/api/xai -- curl -s https://api.x.ai/v1/models")
+		fmt.Fprintln(os.Stderr, "  trustless run --json -s iria/api/xai -s iria/api/openrouter -- sh -c 'echo done'")
 	}
 
 	if err := fs.Parse(args); err != nil {
