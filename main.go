@@ -6,6 +6,7 @@ import (
 
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
+	"github.com/ikkun1222/trustless/internal/proxy"
 	"github.com/ikkun1222/trustless/internal/run"
 	"github.com/ikkun1222/trustless/internal/secret"
 )
@@ -37,8 +38,7 @@ func main() {
 	case "run":
 		run.Run(args, be, cfg)
 	case "proxy":
-		fmt.Fprintln(os.Stderr, "Not yet implemented: trustless proxy")
-		os.Exit(1)
+		proxy.Run(args, be, cfg)
 	case "config":
 		runConfig(args, cfg, cfgPath)
 	default:
