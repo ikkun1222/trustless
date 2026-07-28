@@ -1,6 +1,7 @@
 package run
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
+	"github.com/ikkun1222/trustless/internal/scanner"
 )
 
 type stringSlice []string
@@ -38,6 +40,9 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 	fs.Var(&secrets, "secret", "credential key to inject (repeatable)")
 	jsonOutput := fs.Bool("json", false, "output results as JSON")
 	timeoutStr := fs.String("timeout", "", "subprocess timeout (e.g. \"30s\", \"5m\")")
+
+	sanitizeFlag := fs.Bool("sanitize", true, "enable output sanitization")
+	sanitizePolicy := fs.String("sanitize-policy", "", "path to file with custom redaction patterns")
 
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: trustless run [flags] [--] <command> [args...]")
@@ -67,6 +72,7 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 	}
 
 	env := os.Environ()
+	var credValues []string
 	for _, key := range secrets {
 		val, err := be.Resolve(ctx, key)
 		if err != nil {
@@ -75,15 +81,46 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 		}
 		envName := envVarName(key)
 		env = append(env, envName+"="+val)
+		credValues = append(credValues, val)
+	}
+
+	sanitize := *sanitizeFlag && cfg.RunDefaults.Sanitize
+
+	var s *scanner.Scanner
+	if sanitize {
+		s = scanner.New()
+		for _, p := range cfg.Sanitize.Patterns {
+			if err := s.AddPattern(p); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid pattern in config: %v\n", err)
+				os.Exit(2)
+			}
+		}
+		if *sanitizePolicy != "" {
+			data, err := os.ReadFile(*sanitizePolicy)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: reading sanitize policy: %v\n", err)
+				os.Exit(2)
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				if err := s.AddPattern(line); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: invalid pattern in policy file: %v\n", err)
+					os.Exit(2)
+				}
+			}
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
 	cmd.Env = env
 
 	if *jsonOutput {
-		runJSON(cmd)
+		runJSON(cmd, sanitize, s, credValues)
 	} else {
-		runPassthrough(cmd)
+		runPassthrough(cmd, sanitize, s, credValues)
 	}
 }
 
@@ -93,7 +130,27 @@ func envVarName(key string) string {
 	return strings.ToUpper(last)
 }
 
-func runPassthrough(cmd *exec.Cmd) {
+func runPassthrough(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []string) {
+	if sanitize {
+		var stdoutBuf, stderrBuf bytes.Buffer
+		cmd.Stdout = &stdoutBuf
+		cmd.Stderr = &stderrBuf
+		if err := cmd.Run(); err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				os.Stdout.Write(s.ScanWithValues(stdoutBuf.Bytes(), extraValues))
+				os.Stderr.Write(s.ScanWithValues(stderrBuf.Bytes(), extraValues))
+				os.Exit(exitErr.ExitCode())
+			}
+			os.Stdout.Write(s.ScanWithValues(stdoutBuf.Bytes(), extraValues))
+			os.Stderr.Write(s.ScanWithValues(stderrBuf.Bytes(), extraValues))
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Stdout.Write(s.ScanWithValues(stdoutBuf.Bytes(), extraValues))
+		os.Stderr.Write(s.ScanWithValues(stderrBuf.Bytes(), extraValues))
+		return
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -106,7 +163,7 @@ func runPassthrough(cmd *exec.Cmd) {
 	}
 }
 
-func runJSON(cmd *exec.Cmd) {
+func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []string) {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -125,6 +182,11 @@ func runJSON(cmd *exec.Cmd) {
 
 	stdout, _ := io.ReadAll(stdoutPipe)
 	stderr, _ := io.ReadAll(stderrPipe)
+
+	if sanitize {
+		stdout = s.ScanWithValues(stdout, extraValues)
+		stderr = s.ScanWithValues(stderr, extraValues)
+	}
 
 	exitCode := 0
 	if err := cmd.Wait(); err != nil {
