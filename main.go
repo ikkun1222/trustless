@@ -13,6 +13,7 @@ import (
 	"github.com/ikkun1222/trustless/internal/proxy"
 	"github.com/ikkun1222/trustless/internal/run"
 	"github.com/ikkun1222/trustless/internal/secret"
+	"github.com/ikkun1222/trustless/internal/setup"
 )
 
 func main() {
@@ -62,6 +63,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "setup":
+		setup.Run(args)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -80,6 +83,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  trustless version    Show version information")
 	fmt.Fprintln(os.Stderr, "  trustless mcp          Start MCP server (Model Context Protocol)")
 	fmt.Fprintln(os.Stderr, "  trustless completion   Generate shell completion script")
+	fmt.Fprintln(os.Stderr, "  trustless setup        First-time setup wizard (GPG, pass, .env migration)")
 }
 
 func runConfig(args []string, cfg *config.Config, cfgPath string) {
