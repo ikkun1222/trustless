@@ -24,6 +24,7 @@ type Proxy struct {
 	port      int
 	unixPath  string
 	allowlist []string
+	ca        *CA
 }
 
 func (p *Proxy) replacePlaceholders(s string) string {
@@ -122,7 +123,11 @@ func (p *Proxy) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
-			p.handleCONNECT(w, r)
+			if p.ca != nil {
+				p.mitmHandleCONNECT(w, r, p.ca)
+			} else {
+				p.handleCONNECT(w, r)
+			}
 			return
 		}
 		p.handleHTTP(w, r)
@@ -188,6 +193,7 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 	}
 	port := fs.Int("port", cfg.Proxy.Port, "listen port")
 	unixSocket := fs.String("unix-socket", "", "unix socket path")
+	mitm := fs.Bool("mitm", false, "Enable MITM mode (intercept HTTPS for placeholder substitution)")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
@@ -197,6 +203,18 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 		backend:  be,
 		port:     *port,
 		unixPath: *unixSocket,
+	}
+
+	if *mitm {
+		caCfg := DefaultCAPaths()
+		var caErr error
+		p.ca, caErr = LoadOrGenerateCA(caCfg)
+		if caErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: MITM CA setup failed: %v\n", caErr)
+			os.Exit(2)
+		}
+		fmt.Fprintf(os.Stderr, "MITM CA certificate: %s\n", caCfg.CertPath)
+		fmt.Fprintf(os.Stderr, "Install: sudo cp %s /usr/local/share/ca-certificates/ && sudo update-ca-certificates\n", caCfg.CertPath)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
