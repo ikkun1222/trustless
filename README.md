@@ -25,6 +25,24 @@ trustless:    agent → says "use GITHUB_TOKEN" → broker resolves → agent ge
 
 ## Installation
 
+### One-liner (Linux / macOS)
+
+```bash
+curl -fsSL https://trustless.sh/install.sh | sh
+```
+
+To install without the setup prompt (for CI/Docker):
+
+```bash
+curl -fsSL https://trustless.sh/install.sh | sh -s -- --minimal
+```
+
+To upgrade an existing installation:
+
+```bash
+curl -fsSL https://trustless.sh/install.sh | sh -s -- --update
+```
+
 ### From source (Go 1.26+)
 
 ```bash
@@ -47,6 +65,12 @@ go install github.com/ikkun1222/trustless@latest
 ## Quick Start
 
 ```bash
+# First-time setup (GPG key, pass store, .env migration, agent config)
+trustless setup
+
+# Check system health
+trustless doctor
+
 # List credentials from the pass store
 trustless secret list
 
@@ -160,6 +184,44 @@ The server implements [JSON-RPC 2.0](https://www.jsonrpc.org/specification) over
 | `list_credentials` | List all credential keys | `{}` |
 
 **Protocol:** MCP 2024-11-05. Compatible with any MCP-compatible AI agent (Hermes, Claude Code, Codex, Cursor, etc.).
+
+### `trustless setup` — First-Time Setup Wizard
+
+Interactive wizard that automates the full first-time setup:
+
+```bash
+trustless setup
+```
+
+**4-step flow:**
+
+| Step | Action | Auto-detection |
+|------|--------|----------------|
+| [1/4] GPG Key | Detect existing key or batch-create RSA 3072 (no passphrase, 5y expiry) | Scans `gpg --list-secret-keys` |
+| [2/4] pass Store | Initialize pass store, git init | Checks `pass` availability |
+| [3/4] .env Import | Scan directories for .env files, parse KEY=VALUE, import to pass, backup originals | Walks `--import-dir` paths (default: `.`) |
+| [4/4] Agent Integration | Detect and suggest wrapping credentials for AI coding agents | Checks agent config files |
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--non-interactive` | Run in non-interactive mode (safe defaults, no prompts, no file removal) |
+| `--import-dir <dir>` | Directory to scan for .env files (repeatable, default: `.`) |
+
+**Agent detection currently supports:** OpenCode, Claude Code, Codex, Hermes.
+
+### `trustless doctor` — System Health Check
+
+Diagnostic tool that validates the entire trustless setup:
+
+```bash
+trustless doctor           # Human-readable output
+trustless doctor --json    # Structured JSON for cron/SIEM
+trustless doctor --fix     # Auto-resolve detected issues (stub)
+```
+
+**Health checks performed:** GPG key validity, pass store health, gpg-agent status, .env file security scan, agent integration status, MITM CA certificate installation.
 
 ### `trustless config` — Tool Configuration
 

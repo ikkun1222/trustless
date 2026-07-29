@@ -21,6 +21,24 @@ trustless: agent → 「GITHUB_TOKENを使って」→ broker が解決 → agen
 
 ## インストール
 
+### ワンライナー（Linux / macOS）
+
+```bash
+curl -fsSL https://trustless.sh/install.sh | sh
+```
+
+最小インストール（CI/Docker用）:
+
+```bash
+curl -fsSL https://trustless.sh/install.sh | sh -s -- --minimal
+```
+
+アップグレード:
+
+```bash
+curl -fsSL https://trustless.sh/install.sh | sh -s -- --update
+```
+
 ### Go 1.26+ からビルド
 
 ```bash
@@ -43,6 +61,12 @@ go install github.com/ikkun1222/trustless@latest
 ## クイックスタート
 
 ```bash
+# 初回セットアップ（GPG鍵、passストア、.env移行、agent設定）
+trustless setup
+
+# システムヘルスチェック
+trustless doctor
+
 # pass store の認証情報一覧
 trustless secret list
 
@@ -149,6 +173,44 @@ trustless mcp
 | `list_credentials` | 認証情報キー一覧 | `{}` |
 
 **プロトコル:** MCP 2024-11-05。Hermes、Claude Code、Codex、Cursor など MCP 対応のAIエージェントと互換性あり。
+
+### `trustless setup` — 初回セットアップウィザード
+
+初回セットアップを自動化する対話型ウィザード:
+
+```bash
+trustless setup
+```
+
+**4ステップの流れ:**
+
+| ステップ | 内容 | 自動検出 |
+|----------|------|----------|
+| [1/4] GPG鍵 | 既存鍵を検出、なければRSA 3072を生成（パスフレーズなし、5年期限） | `gpg --list-secret-keys` をスキャン |
+| [2/4] passストア | passストアを初期化、git initを実行 | `pass` コマンドの有無を確認 |
+| [3/4] .envインポート | .envファイルをスキャン、passに一括インポート、元ファイルをバックアップ | `--import-dir` で指定されたディレクトリを検索 |
+| [4/4] AIエージェント連携 | AIコーディングエージェントの設定を検出し、trustless連携を提案 | 各agentの設定ファイルを確認 |
+
+**オプション:**
+
+| フラグ | 説明 |
+|--------|------|
+| `--non-interactive` | 非対話モード（安全なデフォルト値を使用、ファイル削除なし） |
+| `--import-dir <dir>` | .envファイルをスキャンするディレクトリ（複数指定可、デフォルト: `.`） |
+
+**対応エージェント:** OpenCode、Claude Code、Codex、Hermes。
+
+### `trustless doctor` — システムヘルスチェック
+
+trustlessのセットアップ全体を検証する診断ツール:
+
+```bash
+trustless doctor           # 人間が読める形式で出力
+trustless doctor --json    # JSON出力（cron/SIEM連携用）
+trustless doctor --fix     # 検出された問題を自動修復（スタブ）
+```
+
+**チェック項目:** GPG鍵の有効性、passストアの状態、gpg-agentの応答、.envファイルのセキュリティ、エージェント連携状況、MITM CA証明書のインストール状態。
 
 ### `trustless config` — 設定管理
 
