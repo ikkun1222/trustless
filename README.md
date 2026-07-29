@@ -200,7 +200,18 @@ trustless setup
 | [1/4] GPG Key | Detect existing key or batch-create RSA 3072 (no passphrase, 5y expiry) | Scans `gpg --list-secret-keys` |
 | [2/4] pass Store | Initialize pass store, git init | Checks `pass` availability |
 | [3/4] .env Import | Scan directories for .env files, parse KEY=VALUE, import to pass, backup originals | Walks `--import-dir` paths (default: `.`) |
-| [4/4] Agent Integration | Detect and suggest wrapping credentials for AI coding agents | Checks agent config files |
+| [4/4] Agent Integration | Detect AI coding agents and **install trustless-usage SKILL.md** into their skill directory (upon confirmation) | Config file existence + grep for trustless references |
+
+**Skill installation paths per agent:**
+
+| Agent | Skill directory |
+|-------|----------------|
+| OpenCode | `~/.config/opencode/skills/trustless-usage/` |
+| Claude Code | `~/.claude/skills/trustless-usage/` |
+| Codex | `~/.codex/skills/trustless-usage/` |
+| Hermes | `~/.hermes/skills/credential-management/trustless-usage/` |
+
+The installed skill teaches the AI agent the credential conventions: use `trustless run` for injection, `trustless secret set` for registration, and never store plaintext credentials.
 
 **Options:**
 

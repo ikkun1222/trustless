@@ -189,7 +189,18 @@ trustless setup
 | [1/4] GPG鍵 | 既存鍵を検出、なければRSA 3072を生成（パスフレーズなし、5年期限） | `gpg --list-secret-keys` をスキャン |
 | [2/4] passストア | passストアを初期化、git initを実行 | `pass` コマンドの有無を確認 |
 | [3/4] .envインポート | .envファイルをスキャン、passに一括インポート、元ファイルをバックアップ | `--import-dir` で指定されたディレクトリを検索 |
-| [4/4] AIエージェント連携 | AIコーディングエージェントの設定を検出し、trustless連携を提案 | 各agentの設定ファイルを確認 |
+| [4/4] AIエージェント連携 | AIコーディングエージェントの設定を検出し、**trustless-usage SKILL.md を各エージェントのスキルディレクトリにインストール**（確認後） | 各agentの設定ファイルの存在 + trustless参照の有無をgrep |
+
+**スキルインストール先:**
+
+| エージェント | スキルディレクトリ |
+|-------------|-------------------|
+| OpenCode | `~/.config/opencode/skills/trustless-usage/` |
+| Claude Code | `~/.claude/skills/trustless-usage/` |
+| Codex | `~/.codex/skills/trustless-usage/` |
+| Hermes | `~/.hermes/skills/credential-management/trustless-usage/` |
+
+インストールされるスキルは、AIエージェントにcredential管理のルール（`trustless run` で注入、`trustless secret set` で登録、平文保存禁止）を教えます。
 
 **オプション:**
 
