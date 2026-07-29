@@ -82,3 +82,52 @@ func TestScanWithValues_EmptyValues(t *testing.T) {
 		t.Errorf("expected unchanged, got: %s", string(output))
 	}
 }
+
+func TestContainsCredentials_GitHubToken(t *testing.T) {
+	s := New()
+	if !s.ContainsCredentials([]byte("ghp_abc123def456xyz789"), nil) {
+		t.Error("expected true for GitHub token")
+	}
+}
+
+func TestContainsCredentials_OpenAIKey(t *testing.T) {
+	s := New()
+	if !s.ContainsCredentials([]byte("sk-proj-abc123def456xyz789abc123def456"), nil) {
+		t.Error("expected true for OpenAI key")
+	}
+}
+
+func TestContainsCredentials_ExactValue(t *testing.T) {
+	s := New()
+	if !s.ContainsCredentials([]byte("my-secret-value"), []string{"my-secret-value"}) {
+		t.Error("expected true for extra value match")
+	}
+}
+
+func TestContainsCredentials_CleanInput(t *testing.T) {
+	s := New()
+	if s.ContainsCredentials([]byte("hello world this is safe"), nil) {
+		t.Error("expected false for clean input")
+	}
+}
+
+func TestContainsCredentials_EmptyInput(t *testing.T) {
+	s := New()
+	if s.ContainsCredentials([]byte{}, nil) {
+		t.Error("expected false for empty input")
+	}
+}
+
+func TestContainsCredentials_EmptyExtraValues(t *testing.T) {
+	s := New()
+	if s.ContainsCredentials([]byte("safe input"), []string{}) {
+		t.Error("expected false for empty extra values")
+	}
+}
+
+func TestContainsCredentials_ExtraValueNotPresent(t *testing.T) {
+	s := New()
+	if s.ContainsCredentials([]byte("safe input"), []string{"not-present"}) {
+		t.Error("expected false when extra value is not present")
+	}
+}

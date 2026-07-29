@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"bytes"
 	"regexp"
 	"strings"
 )
@@ -59,4 +60,18 @@ func (s *Scanner) ScanWithValues(input []byte, extraValues []string) []byte {
 		sout = strings.ReplaceAll(sout, v, "[REDACTED]")
 	}
 	return []byte(sout)
+}
+
+func (s *Scanner) ContainsCredentials(input []byte, extraValues []string) bool {
+	for _, re := range s.patterns {
+		if re.Match(input) {
+			return true
+		}
+	}
+	for _, v := range extraValues {
+		if v != "" && bytes.Contains(input, []byte(v)) {
+			return true
+		}
+	}
+	return false
 }
