@@ -26,6 +26,61 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+const trustlessSkillMD = "# trustless-usage\n\n" +
+	"This project uses [trustless](https://github.com/ikkun1222/trustless) CLI for credential management.\n\n" +
+	"## Core Rules\n\n" +
+	"- **Never use plaintext .env files or hardcoded API keys.** All credentials are stored in the pass password store managed by trustless.\n" +
+	"- **The agent NEVER sees plaintext credential values.** trustless injects secrets into subprocess memory only.\n" +
+	"- **All output is automatically sanitized.** Credential patterns in stdout/stderr are REDACTED by default.\n\n" +
+	"## Running Commands with Credentials\n\n" +
+	"To run a command with credential injection:\n\n" +
+	"```\ntrustless run -s <key> -- <command>\n```\n\n" +
+	"Example:\n```\ntrustless run -s OPENAI_API_KEY -- opencode --model \"gpt-4o\" \"implement feature X\"\n```\n\n" +
+	"## Registering a New Credential\n\n" +
+	"To add a new credential to the store:\n\n" +
+	"```\ntrustless secret set <key>\n```\n\n" +
+	"You will be prompted to enter the value. The credential is encrypted immediately.\n\n" +
+	"## Security Notes\n\n" +
+	"- Use `--scan-args` (default: on) to prevent credential leakage in CLI arguments.\n" +
+	"- Never pipe credential values through stdin manually.\n" +
+	"- Never echo or print credential values — trustless handles masking automatically.\n"
+
+func findSkillDir(agentName string) (string, error) {
+	home, err := homeDir()
+	if err != nil {
+		return "", err
+	}
+
+	switch agentName {
+	case "opencode":
+		return filepath.Join(home, ".config", "opencode", "skills", "trustless-usage"), nil
+	case "claude-code":
+		return filepath.Join(home, ".claude", "skills", "trustless-usage"), nil
+	case "codex":
+		return filepath.Join(home, ".codex", "skills", "trustless-usage"), nil
+	case "hermes":
+		return filepath.Join(home, ".hermes", "skills", "credential-management", "trustless-usage"), nil
+	default:
+		return "", fmt.Errorf("unknown agent: %s", agentName)
+	}
+}
+
+func InstallTrustlessSkill(agentName string) error {
+	dir, err := findSkillDir(agentName)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create skill directory: %w", err)
+	}
+	skillPath := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte(trustlessSkillMD), 0644); err != nil {
+		return fmt.Errorf("failed to write SKILL.md: %w", err)
+	}
+	fmt.Printf("  %s\u2713%s trustless-usage skill installed for %s\n", green, reset, agentName)
+	return nil
+}
+
 func DetectOpenCode() (*AgentDetectResult, error) {
 	home, err := homeDir()
 	if err != nil {
@@ -87,6 +142,9 @@ func DetectOpenCode() (*AgentDetectResult, error) {
 		Detected:    true,
 		NeedsChange: needsChange,
 		Description: description,
+		ChangeFunc: func() error {
+			return InstallTrustlessSkill("opencode")
+		},
 	}, nil
 }
 
@@ -135,6 +193,9 @@ func DetectClaudeCode() (*AgentDetectResult, error) {
 		Detected:    true,
 		NeedsChange: needsChange,
 		Description: description,
+		ChangeFunc: func() error {
+			return InstallTrustlessSkill("claude-code")
+		},
 	}, nil
 }
 
@@ -173,6 +234,9 @@ func DetectCodex() (*AgentDetectResult, error) {
 		Detected:    true,
 		NeedsChange: needsChange,
 		Description: description,
+		ChangeFunc: func() error {
+			return InstallTrustlessSkill("codex")
+		},
 	}, nil
 }
 
@@ -224,6 +288,9 @@ func DetectHermes() (*AgentDetectResult, error) {
 		Detected:    true,
 		NeedsChange: needsChange,
 		Description: description,
+		ChangeFunc: func() error {
+			return InstallTrustlessSkill("hermes")
+		},
 	}, nil
 }
 
