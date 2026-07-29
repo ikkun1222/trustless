@@ -133,7 +133,7 @@ export HTTPS_PROXY=http://127.0.0.1:8080
 ```
 
 **Request flow:**
-1. Agent makes request: `curl -H "Authorization: Bearer __GITHUB_TOKEN__" https://api.github.com/repos/owner/repo`
+1. Agent makes request: `curl -H "Authorization: Bearer ***" https://api.github.com/repos/owner/repo`
 2. Proxy intercepts, substitutes `__GITHUB_TOKEN__` with resolved value
 3. Forwards to GitHub, returns response to agent
 
@@ -195,7 +195,17 @@ patterns = [
    - **Injected values are themselves pattern-scanned**: if the subprocess echoes `DATABASE_URL=postgres://...`, that line is redacted
    - Custom patterns via config file
 
-3. **Minimal attack surface**
+2. **Command argument scanning** (`--scan-args`)
+   - Before spawning a subprocess, all command arguments are scanned for credential patterns and injected values
+   - If detected, execution is blocked with exit code 3 (fail closed)
+   - Prevents the agent from accidentally exposing credential values in CLI arguments
+
+3. **Policy engine** — command-level access control
+   - `policy.default.denied_commands`: block dangerous commands globally (e.g., `sh`, `bash`)
+   - `policy.<key>.denied_commands`: block specific commands per credential
+   - Fail-closed: policy violation blocks execution with exit code 3
+
+4. **Minimal attack surface**
    - Proxy listens on `127.0.0.1` by default (not exposed)
    - Unix socket mode available (file permission control)
    - Single binary, no runtime dependencies beyond `pass`+`gpg`
@@ -229,7 +239,7 @@ Implements:
 - **No sanitization yet** — raw output returned
 - Default output: raw stdout/stderr to terminal, preserving subprocess behavior
 
-**Acceptance:** `trustless run -s iria/api/xai -- curl -s -H "Authorization: Bearer $(printenv XAI)" https://api.x.ai/...` (エコーはされるがcredentialがsubprocessで使える)
+**Acceptance:** `trustless run -s iria/api/xai -- curl -s -H "Authorization: Bearer *** XAI)" https://api.x.ai/...` (エコーはされるがcredentialがsubprocessで使える)
 
 ### Step B — Output scanner (`internal/scanner/`)
 
@@ -243,7 +253,7 @@ Implements:
 - Redaction replaces matched content with `[REDACTED]`
 - Thread-safe (patterns are read-only after init)
 
-**Acceptance:** `scanner.ScanKnown([]byte("ghp_abc123def456"))` returns `[REDACTED]`
+**Acceptance:** `scanner.ScanKnown([]byte("***"))` returns `[REDACTED]`
 
 ### Step C — Integrate scanner into `trustless run`
 

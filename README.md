@@ -2,13 +2,12 @@
 
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Go Reference](https://pkg.go.dev/badge/github.com/ikkun1222/trustless.svg)](https://pkg.go.dev/github.com/ikkun1222/trustless)
 
 ## Overview
 
-**trustless** is a credential broker CLI that decouples AI agents from the secrets they use. Instead of agents holding plaintext credentials in their context window (where prompt injection or leakage can expose them), trustless acts as an intermediary: agents reference credentials by name, and the broker resolves them at the transport or process layer.
+**trustless** is a credential broker CLI that decouples AI agents from the secrets they use. Instead of agents holding plaintext credentials in their context window (where prompt injection or leakage can expose them), trustless acts as an intermediary: agents reference credentials by name, and the broker resolves them at the transport or process layer — the agent **never holds plaintext values**.
 
-The name reflects the architecture — you don't need to *trust* the agent with secrets because the agent structurally cannot access them.
+The name reflects the architecture: you don't need to *trust* the agent with secrets because the agent structurally cannot access them.
 
 ### Why trustless?
 
@@ -42,7 +41,8 @@ go install github.com/ikkun1222/trustless@latest
 ### Prerequisites
 
 - **Go 1.26+** for building from source
-- **`pass`** (the standard Unix password manager) + **`gpg`** — the credential backend
+- **`pass`** (the standard Unix password manager) + **`gpg`** — the default credential backend
+- Environment variables only (no `pass` needed) when using `backend = "env"`
 
 ## Quick Start
 
@@ -53,8 +53,11 @@ trustless secret list
 # Run a command with a credential injected (output is sanitized)
 trustless run -s iria/api/xai -- curl -s https://api.x.ai/v1/models
 
-# Start the credential proxy on port 8080
+# Start the credential proxy
 trustless proxy start --port 8080
+
+# Start MCP server for AI agent integration
+trustless mcp
 ```
 
 ## Commands Reference
@@ -62,7 +65,7 @@ trustless proxy start --port 8080
 ### `trustless secret` — Credential Store Operations
 
 | Subcommand | Description | Example |
-|---|---|---|
+|------------|-------------|---------|
 | `list` | List all available credential keys | `trustless secret list` |
 | `get <key>` | Retrieve a credential value (JSON output) | `trustless secret get github_token` |
 | `set <key> [value]` | Store a new credential (wraps `pass insert`) | `trustless secret set openai_key sk-...` |
@@ -82,18 +85,25 @@ trustless run -s GITHUB_TOKEN -s OPENAI_KEY -- gh pr list
 ```
 
 **How it works:**
-1. trustless resolves each `-s` key from the pass backend
+1. trustless resolves each `-s` key from the backend
 2. Spawns the subprocess with the credential value set as an environment variable
-3. The environment variable name is derived from the last path segment of the key, converted to `UPPER_SNAKE_CASE` (e.g. `iria/api/xai` → `XAI`, `github_token` → `GITHUB_TOKEN`)
+3. The environment variable name is derived from the last path segment of the key, converted to `UPPER_SNAKE_CASE` (e.g. `iria/api/xai` → `XAI`)
 4. Captures stdout/stderr
 5. Scans output for credential patterns and **redacts** matches with `[REDACTED]`
 6. Returns sanitized output to the caller
 
+**Security features:**
+
+- **`--scan-args`** (default: `true`): Before spawning the subprocess, all command arguments are scanned for credential patterns and injected values. If detected, execution is blocked with exit code 3 (fail closed). This prevents the agent from accidentally exposing credential values in CLI arguments like `curl -H "Authorization: Bearer ***"`.
+- **`--sanitize`** (default: `true`): Scans and redacts credential patterns from subprocess output.
+- **Policy engine**: Command-level access control (see configuration section).
+
 | Flag | Description |
-|---|---|
-| `-s, --secret <key>` | Credential key to inject (repeatable) |
+|------|-------------|
+| `-s, --secret <key>` | Credential key to inject (repeatable, format: `KEY` or `KEY:ENVNAME`) |
 | `--sanitize` | Enable output scanning/redaction (default: on) |
 | `--sanitize-policy <file>` | Custom redaction patterns file |
+| `--scan-args` | Scan command arguments for credential patterns before spawning (default: on) |
 | `--json` | Output as JSON `{"exit_code": N, "stdout": "...", "stderr": "..."}` |
 | `--timeout <duration>` | Subprocess timeout (default: 5m) |
 
@@ -103,6 +113,7 @@ Start a local HTTP forward proxy that substitutes `__KEY_NAME__` placeholders in
 
 ```bash
 trustless proxy start --port 8080
+trustless proxy start --port 8080 --mitm  # HTTPS interception mode
 ```
 
 Configure your agent to use the proxy:
@@ -111,24 +122,49 @@ Configure your agent to use the proxy:
 export HTTPS_PROXY=http://127.0.0.1:8080
 ```
 
-**Request flow:**
-1. Agent makes a request: `curl -H "Authorization: Bearer __GITHUB_TOKEN__" https://api.github.com/repos/owner/repo`
-2. Proxy intercepts the request, substitutes `__GITHUB_TOKEN__` with the resolved value
-3. Forwards to the target API, returns the response to the agent
-
 **Placeholder format:** `__<KEY_NAME>__` — double underscores surrounding an uppercase key name. Resolution tries the lowercase key as a pass entry first, then falls back to `iria/api/<lowercase_key>`.
 
-| Flag | Description |
-|---|---|
-| `--port <n>` | Listen port (default: 8080) |
-| `--unix-socket <path>` | Listen on Unix socket (more secure, file permission control) |
+**MITM mode (`--mitm`):**
+- Enables HTTPS interception for placeholder substitution in encrypted requests
+- Auto-generates a root CA certificate at `~/.config/trustless/trustless-ca.{crt,key}` on first use
+- Leaf certificates are generated per-hostname (24h validity, ECDSA P-256)
+- Install the CA certificate system-wide for seamless HTTPS interception:
 
-HTTPS CONNECT tunneling is supported, but placeholder substitution only applies to HTTP requests (CONNECT tunnels are passed through without modification).
+  ```bash
+  sudo cp ~/.config/trustless/trustless-ca.crt /usr/local/share/ca-certificates/
+  sudo update-ca-certificates
+  ```
+
+| Flag | Description |
+|------|-------------|
+| `--port <n>` | Listen port (default: 8080) |
+| `--unix-socket <path>` | Listen on Unix socket (file permission control) |
+| `--mitm` | Enable MITM mode (intercept HTTPS for placeholder substitution) |
+
+HTTPS CONNECT tunneling is supported. Without `--mitm`, CONNECT requests pass through without modification. With `--mitm`, the connection is intercepted and placeholder substitution applies.
+
+### `trustless mcp` — MCP Server Mode
+
+Start a stdio-based MCP (Model Context Protocol) server for AI agents to resolve credentials directly.
+
+```bash
+trustless mcp
+```
+
+The server implements [JSON-RPC 2.0](https://www.jsonrpc.org/specification) over stdin/stdout with these tools:
+
+| Tool | Description | Input |
+|------|-------------|-------|
+| `resolve_credential` | Resolve and return a credential value | `{"key": "..."}` |
+| `inject_run` | Run a command with credential injection | `{"secrets": [...], "command": [...], "sanitize": true}` |
+| `list_credentials` | List all credential keys | `{}` |
+
+**Protocol:** MCP 2024-11-05. Compatible with any MCP-compatible AI agent (Hermes, Claude Code, Codex, Cursor, etc.).
 
 ### `trustless config` — Tool Configuration
 
 | Subcommand | Description |
-|---|---|
+|------------|-------------|
 | `init` | Create default config at `~/.config/trustless/config.toml` |
 | `show` | Print current configuration |
 | `set <key> <value>` | Update a configuration value |
@@ -136,12 +172,13 @@ HTTPS CONNECT tunneling is supported, but placeholder substitution only applies 
 **Config keys:**
 
 | Key | Description | Default |
-|---|---|---|
-| `backend` | Credential backend | `pass` |
+|-----|-------------|---------|
+| `backend` | Credential backend (`pass` or `env`) | `pass` |
 | `output` | Default output mode | `json` |
 | `run_defaults.sanitize` | Enable sanitization by default | `true` |
 | `run_defaults.timeout` | Default subprocess timeout | `5m` |
 | `proxy.port` | Default proxy port | `8080` |
+| `policy.default.denied_commands` | Commands blocked globally (e.g., `sh,bash`) | (empty) |
 
 **Config file location:** `~/.config/trustless/config.toml` (overridable via `TRUSTLESS_CONFIG` env var)
 
@@ -160,6 +197,13 @@ patterns = [
   "(ghp|gho|ghu|ghs)_[A-Za-z0-9_]+",
   "Bearer [A-Za-z0-9._-]+",
 ]
+
+[policy.default]
+denied_commands = ["sh", "bash", "zsh"]
+
+[[policy.overrides]]
+secret_key = "iria/api/xai"
+denied_commands = ["curl"]
 ```
 
 ### `trustless completion` — Shell Completion
@@ -172,6 +216,12 @@ trustless completion zsh > /usr/local/share/zsh/site-functions/_trustless
 trustless completion fish > ~/.config/fish/completions/trustless.fish
 ```
 
+### `trustless version` — Version Information
+
+```bash
+trustless version
+```
+
 ## Architecture
 
 ```
@@ -179,36 +229,36 @@ trustless completion fish > ~/.config/fish/completions/trustless.fish
 │                   AI Agent (Hermes / LLM)                │
 │  "run psql with DATABASE_URL"                            │
 └────────────────────┬────────────────────────────────────┘
-                     │ CLI / HTTP
+                     │ CLI / HTTP / MCP
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │                   trustless CLI                          │
 │                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐  │
-│  │ secret   │  │ run      │  │ proxy                │  │
-│  │ (list/   │  │ (subproc │  │ (HTTP forward proxy  │  │
-│  │  get/set)│  │  inject) │  │  with placeholder    │  │
-│  └────┬─────┘  └────┬─────┘  │  substitution)       │  │
-│       │             │        └──────────┬───────────┘  │
-│       │             │                   │              │
-│  ┌────┴─────────────┴───────────────────┴──────────┐   │
-│  │              Backend Interface                   │   │
-│  │  (resolve credential by key name)                │   │
-│  └────────────────────┬────────────────────────────┘   │
-└───────────────────────┼────────────────────────────────┘
-                        │
-          ┌─────────────┴─────────────┐
-          │                           │
-          ▼                           ▼
-   ┌──────────────┐          ┌──────────────┐
-   │  pass store   │          │  Target API   │
-   │  (GPG + pass) │          │  / Service    │
-   └──────────────┘          └──────────────┘
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐ │
+│  │ secret   │  │ run      │  │ proxy    │  │ mcp    │ │
+│  │ (list/   │  │ (subproc │  │ (HTTP    │  │ (MCP   │ │
+│  │  get/set)│  │  inject) │  │  proxy + │  │  stdio │ │
+│  └────┬─────┘  └────┬─────┘  │  MITM)   │  │ server)│ │
+│       │             │        └─────┬─────┘  └────┬───┘ │
+│       │             │              │              │     │
+│  ┌────┴─────────────┴──────────────┴──────────────┴──┐  │
+│  │              Backend Interface                     │  │
+│  │  (pass / env — swappable)                         │  │
+│  └──────────────────────┬───────────────────────────-┘  │
+└─────────────────────────┼──────────────────────────────┘
+                          │
+            ┌─────────────┴─────────────┐
+            │                           │
+            ▼                           ▼
+     ┌──────────────┐          ┌──────────────┐
+     │  pass store   │          │  Target API   │
+     │  (GPG + pass) │          │  / Service    │
+     └──────────────┘          └──────────────┘
 ```
 
 ### Backend Abstraction
 
-The credential resolver is abstracted behind a simple interface, making backends swappable:
+The credential resolver is abstracted behind a simple interface:
 
 ```go
 type Backend interface {
@@ -217,7 +267,11 @@ type Backend interface {
 }
 ```
 
-The only implemented backend is `pass` — it wraps `pass show <key>`, reading the first line as the secret value. The interface is designed to accommodate future backends (e.g., HashiCorp Vault, 1Password CLI, environment variables).
+Implemented backends:
+- **`pass`** (default) — wraps `pass show <key>`, reads first line as secret
+- **`env`** — reads from environment variables via `os.Getenv()` (for CI/CD, containers)
+
+Configure via `trustless config set backend <name>`.
 
 ## Security Model
 
@@ -228,17 +282,28 @@ The only implemented backend is `pass` — it wraps `pass show <key>`, reading t
    - `proxy`: credentials are substituted inside the proxy process; the agent sees only the API response
    - Direct `get` outputs the value but requires explicit invocation (not available to the agent in normal workflows)
 
-2. **Subprocess output sanitization**
-   - Default patterns match common credential formats: GitHub tokens (`ghp_*`, `gho_*`), OpenAI keys (`sk-*`), xAI keys (`xai-*`), AWS keys (`AKIA*`), Bearer tokens, and generic `key=value` patterns
-   - **Injected values are themselves pattern-scanned**: if the subprocess echoes the credential, that value is redacted
-   - Custom patterns can be added via the config file or a policy file (`--sanitize-policy`)
+2. **Command argument scanning** (`--scan-args`)
+   - Before spawning a subprocess, all command arguments are scanned for credential patterns and injected values
+   - If detected, execution is blocked with exit code 3 (fail closed)
+   - Prevents the agent from accidentally exposing credential values in CLI arguments
 
-3. **Minimal attack surface**
+3. **Policy engine** — command-level access control
+   - `policy.default.denied_commands`: block dangerous commands globally (e.g., `sh`, `bash`)
+   - `policy.<key>.denied_commands`: block specific commands per credential
+   - Fail-closed: policy violation blocks execution with exit code 3
+
+4. **Subprocess output sanitization**
+   - Default patterns match common credential formats: GitHub tokens, OpenAI keys, xAI keys, AWS keys, Bearer tokens, and generic patterns
+   - **Injected values are themselves pattern-scanned**: if the subprocess echoes the credential, that value is redacted
+   - Custom patterns via config file or `--sanitize-policy`
+
+5. **Minimal attack surface**
    - Proxy listens on `127.0.0.1` by default (not exposed to the network)
    - Unix socket mode available for file permission control
+   - MITM proxy generates per-hostname ephemeral certificates (24h validity)
    - Single binary with zero runtime dependencies beyond `pass` + `gpg`
 
-4. **No credential persistence in the broker process**
+6. **No credential persistence in the broker process**
    - Credentials are resolved on-demand and released after the subprocess exits
    - HTTP proxy holds credentials in memory only during active request processing
 
@@ -247,6 +312,7 @@ The only implemented backend is `pass` — it wraps `pass show <key>`, reading t
 - **Dynamic/rotating credentials** — the pass store is static; rotation is handled externally
 - **Full audit trail** — basic logging only; SIEM export is future work
 - **Hardware-backed key storage** — relies on GPG keyring security
+- **HTTPS MITM CA trust management** — the MITM proxy generates a CA cert; the user must install it in the OS trust store
 
 ## Configuration
 
@@ -284,13 +350,18 @@ go test ./...
 ├── internal/
 │   ├── backend/
 │   │   ├── backend.go               # Backend interface + types
+│   │   ├── env.go                   # Environment variable backend
 │   │   └── pass.go                  # Pass CLI backend implementation
 │   ├── config/
-│   │   └── config.go                # TOML config loading/saving
+│   │   └── config.go                # TOML config loading/saving (+ policy types)
+│   ├── mcp/
+│   │   └── server.go                # MCP server (JSON-RPC 2.0 over stdio)
 │   ├── proxy/
-│   │   └── command.go               # HTTP forward proxy with credential substitution
+│   │   ├── ca.go                    # MITM CA certificate generation
+│   │   ├── command.go               # HTTP forward proxy with credential substitution
+│   │   └── mitm.go                  # MITM CONNECT handler (HTTPS interception)
 │   ├── run/
-│   │   └── command.go               # Subprocess credential injection
+│   │   └── command.go               # Subprocess credential injection (+ policy check)
 │   ├── scanner/
 │   │   ├── scanner.go               # Pattern-based credential redaction
 │   │   └── scanner_test.go          # Scanner tests
@@ -309,11 +380,11 @@ trustless has a single external dependency — the rest is all Go standard libra
 ### Exit Codes
 
 | Code | Meaning |
-|---|---|
+|------|---------|
 | 0 | Success |
 | 1 | General error |
 | 2 | Credential not found / invalid args |
-| 3 | Subprocess error |
+| 3 | Subprocess error / policy violation / credential in args |
 | 4 | Config error |
 
 ## License
