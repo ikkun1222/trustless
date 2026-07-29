@@ -1,0 +1,134 @@
+package doctor
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"os"
+)
+
+var (
+	green  = ""
+	cyan   = ""
+	yellow = ""
+	red    = ""
+	reset  = ""
+)
+
+func init() {
+	fi, err := os.Stdout.Stat()
+	if err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		green = "\033[32m"
+		cyan = "\033[36m"
+		yellow = "\033[33m"
+		red = "\033[31m"
+		reset = "\033[0m"
+	}
+}
+
+type reportGroup struct {
+	Name   string
+	Checks []CheckResult
+}
+
+func Run(args []string) {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	fix := fs.Bool("fix", false, "Attempt to fix detected issues")
+	jsonOut := fs.Bool("json", false, "Output as JSON")
+	fs.Parse(args)
+
+	groups := []reportGroup{
+		{
+			Name: "PASS STORE",
+			Checks: []CheckResult{
+				CheckGPG(),
+				CheckPassStore(),
+				CheckGPGAgent(),
+			},
+		},
+		{
+			Name: "SECURITY",
+			Checks: []CheckResult{
+				CheckEnvFiles(),
+			},
+		},
+		{
+			Name: "AGENT INTEGRATIONS",
+			Checks: []CheckResult{
+				CheckAgentIntegration("OpenCode", opencodeConfigPaths(), opencodeDetectFn),
+				CheckAgentIntegration("Claude Code", claudeConfigPaths(), claudeDetectFn),
+				CheckAgentIntegration("Codex", codexConfigPaths(), codexDetectFn),
+				CheckAgentIntegration("Hermes", hermesConfigPaths(), hermesDetectFn),
+			},
+		},
+		{
+			Name: "MITM CA",
+			Checks: []CheckResult{
+				CheckMITMCA(),
+			},
+		},
+	}
+
+	var all []CheckResult
+	for _, g := range groups {
+		all = append(all, g.Checks...)
+	}
+
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(all)
+		return
+	}
+
+	printReport(groups, all, *fix)
+}
+
+func printReport(groups []reportGroup, all []CheckResult, fix bool) {
+	fmt.Printf("%strustless doctor%s \u2014 system health check\n\n", cyan, reset)
+
+	for _, g := range groups {
+		fmt.Printf("%s%s%s\n", cyan, g.Name, reset)
+		for _, c := range g.Checks {
+			ch, col := statusDisplay(c.Status)
+			fmt.Printf("  %s%s%s %s\n", col, ch, reset, c.Message)
+		}
+		fmt.Println()
+	}
+
+	var errCount, warnCount int
+	for _, c := range all {
+		switch c.Status {
+		case StatusError:
+			errCount++
+		case StatusWarning:
+			warnCount++
+		}
+	}
+
+	if errCount > 0 || warnCount > 0 {
+		fmt.Printf("Summary: %d error(s), %d warning(s).", errCount, warnCount)
+		if !fix {
+			fmt.Print(" Run with --fix to auto-resolve.\n")
+		} else {
+			fmt.Print("\n")
+		}
+	} else {
+		fmt.Printf("Summary: All checks passed.\n")
+	}
+}
+
+func statusDisplay(s CheckStatus) (string, string) {
+	switch s {
+	case StatusOK:
+		return "\u2713", green
+	case StatusWarning:
+		return "\u2717", red
+	case StatusError:
+		return "\u2717", red
+	case StatusInfo:
+		return "\u26A0", yellow
+	default:
+		return "?", reset
+	}
+}

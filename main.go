@@ -9,6 +9,7 @@ import (
 
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
+	"github.com/ikkun1222/trustless/internal/doctor"
 	"github.com/ikkun1222/trustless/internal/mcp"
 	"github.com/ikkun1222/trustless/internal/proxy"
 	"github.com/ikkun1222/trustless/internal/run"
@@ -63,6 +64,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "doctor":
+		doctor.Run(args)
 	case "setup":
 		setup.Run(args)
 	default:
@@ -83,6 +86,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  trustless version    Show version information")
 	fmt.Fprintln(os.Stderr, "  trustless mcp          Start MCP server (Model Context Protocol)")
 	fmt.Fprintln(os.Stderr, "  trustless completion   Generate shell completion script")
+	fmt.Fprintln(os.Stderr, "  trustless doctor       System health check (--fix, --json)")
 	fmt.Fprintln(os.Stderr, "  trustless setup        First-time setup wizard (GPG, pass, .env migration)")
 }
 
@@ -180,7 +184,7 @@ _trustless_completion() {
     local prev=${COMP_WORDS[COMP_CWORD-1]}
 
     if [ $COMP_CWORD -eq 1 ]; then
-        COMPREPLY=($(compgen -W "secret run proxy config mcp completion" -- "$cur"))
+        COMPREPLY=($(compgen -W "secret run proxy config mcp completion doctor setup" -- "$cur"))
         return
     fi
 
@@ -214,6 +218,8 @@ _trustless_completion() {
         'run:Run command with injected credentials'
         'proxy:Start credential injection proxy'
         'config:Manage configuration'
+        'doctor:System health check (--fix, --json)'
+        'setup:First-time setup wizard'
         'mcp:Start MCP server'
         'completion:Generate shell completion script'
     )
@@ -257,6 +263,8 @@ complete -c trustless -f -n '__fish_use_subcommand' -a 'secret' -d 'Manage crede
 complete -c trustless -f -n '__fish_use_subcommand' -a 'run' -d 'Run command with injected credentials'
 complete -c trustless -f -n '__fish_use_subcommand' -a 'proxy' -d 'Start credential injection proxy'
 complete -c trustless -f -n '__fish_use_subcommand' -a 'config' -d 'Manage configuration'
+complete -c trustless -f -n '__fish_use_subcommand' -a 'doctor' -d 'System health check (--fix, --json)'
+complete -c trustless -f -n '__fish_use_subcommand' -a 'setup' -d 'First-time setup wizard'
 complete -c trustless -f -n '__fish_use_subcommand' -a 'mcp' -d 'Start MCP server'
 complete -c trustless -f -n '__fish_use_subcommand' -a 'completion' -d 'Generate shell completion script'
 
