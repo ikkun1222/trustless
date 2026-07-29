@@ -33,6 +33,26 @@ type runResult struct {
 	Stderr   string `json:"stderr"`
 }
 
+func CheckPolicy(cmdName string, secretKeys []string, policy config.PolicyConfig) error {
+	for _, key := range secretKeys {
+		for _, override := range policy.Overrides {
+			if override.SecretKey == key {
+				for _, denied := range override.DeniedCommands {
+					if cmdName == denied {
+						return fmt.Errorf("policy violation: credential %q is not allowed with command %q", key, cmdName)
+					}
+				}
+			}
+		}
+	}
+	for _, denied := range policy.Default.DeniedCommands {
+		if cmdName == denied {
+			return fmt.Errorf("policy violation: command %q is denied by default policy", cmdName)
+		}
+	}
+	return nil
+}
+
 func Run(args []string, be backend.Backend, cfg *config.Config) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	var secrets stringSlice
@@ -68,6 +88,22 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 	if len(cmdArgs) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: no command specified")
 		os.Exit(2)
+	}
+
+	if len(cmdArgs) > 0 {
+		var secretKeys []string
+		for _, spec := range secrets {
+			if colon := strings.Index(spec, ":"); colon >= 0 {
+				secretKeys = append(secretKeys, spec[:colon])
+			} else {
+				secretKeys = append(secretKeys, spec)
+			}
+		}
+		cmdBase := path.Base(cmdArgs[0])
+		if err := CheckPolicy(cmdBase, secretKeys, cfg.Policy); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(3)
+		}
 	}
 
 	ctx := context.Background()

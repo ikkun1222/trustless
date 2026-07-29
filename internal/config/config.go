@@ -15,6 +15,7 @@ type Config struct {
 	RunDefaults RunDefaults      `toml:"run_defaults"`
 	Proxy       ProxyConfig      `toml:"proxy"`
 	Sanitize    SanitizeConfig   `toml:"sanitize"`
+	Policy      PolicyConfig     `toml:"policy"`
 }
 
 type RunDefaults struct {
@@ -28,6 +29,20 @@ type ProxyConfig struct {
 
 type SanitizeConfig struct {
 	Patterns []string `toml:"patterns"`
+}
+
+type PolicyRule struct {
+	DeniedCommands []string `toml:"denied_commands"`
+}
+
+type PolicyOverride struct {
+	SecretKey string `toml:"secret_key"`
+	PolicyRule
+}
+
+type PolicyConfig struct {
+	Default   PolicyRule       `toml:"default"`
+	Overrides []PolicyOverride `toml:"overrides"`
 }
 
 // Default config values.
@@ -60,6 +75,7 @@ func Default() *Config {
 		Sanitize: SanitizeConfig{
 			Patterns: defaultPatterns,
 		},
+		Policy: PolicyConfig{},
 	}
 }
 

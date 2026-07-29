@@ -106,6 +106,12 @@ func runConfig(args []string, cfg *config.Config, cfgPath string) {
 		fmt.Printf("run_defaults.sanitize = %v\n", cfg.RunDefaults.Sanitize)
 		fmt.Printf("run_defaults.timeout = %s\n", cfg.RunDefaults.Timeout)
 		fmt.Printf("proxy.port = %d\n", cfg.Proxy.Port)
+		if len(cfg.Policy.Default.DeniedCommands) > 0 {
+			fmt.Printf("policy.default.denied_commands = %v\n", cfg.Policy.Default.DeniedCommands)
+		}
+		for _, o := range cfg.Policy.Overrides {
+			fmt.Printf("policy.override[%s].denied_commands = %v\n", o.SecretKey, o.DeniedCommands)
+		}
 	case "set":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "Usage: trustless config set <key> <value>")
@@ -135,6 +141,11 @@ func runConfig(args []string, cfg *config.Config, cfgPath string) {
 				os.Exit(1)
 			}
 			currentCfg.Proxy.Port = port
+		case "policy.default.denied_commands":
+			currentCfg.Policy.Default.DeniedCommands = strings.Split(value, ",")
+			for i, cmd := range currentCfg.Policy.Default.DeniedCommands {
+				currentCfg.Policy.Default.DeniedCommands[i] = strings.TrimSpace(cmd)
+			}
 		default:
 			fmt.Fprintf(os.Stderr, "Error: unknown config key: %s\n", key)
 			os.Exit(1)
