@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
+	"github.com/ikkun1222/trustless/internal/mcp"
 	"github.com/ikkun1222/trustless/internal/proxy"
 	"github.com/ikkun1222/trustless/internal/run"
 	"github.com/ikkun1222/trustless/internal/secret"
@@ -53,6 +55,13 @@ func main() {
 		fmt.Println("trustless v0.1.0")
 	case "completion":
 		runCompletion(args)
+	case "mcp":
+		mcpServer := mcp.NewServer(be)
+		ctx := context.Background()
+		if err := mcpServer.Serve(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -69,7 +78,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  trustless proxy      Start credential injection proxy")
 	fmt.Fprintln(os.Stderr, "  trustless config     Manage configuration")
 	fmt.Fprintln(os.Stderr, "  trustless version    Show version information")
-	fmt.Fprintln(os.Stderr, "  trustless completion Generate shell completion script")
+	fmt.Fprintln(os.Stderr, "  trustless mcp          Start MCP server (Model Context Protocol)")
+	fmt.Fprintln(os.Stderr, "  trustless completion   Generate shell completion script")
 }
 
 func runConfig(args []string, cfg *config.Config, cfgPath string) {
@@ -155,7 +165,7 @@ _trustless_completion() {
     local prev=${COMP_WORDS[COMP_CWORD-1]}
 
     if [ $COMP_CWORD -eq 1 ]; then
-        COMPREPLY=($(compgen -W "secret run proxy config completion" -- "$cur"))
+        COMPREPLY=($(compgen -W "secret run proxy config mcp completion" -- "$cur"))
         return
     fi
 
@@ -189,6 +199,7 @@ _trustless_completion() {
         'run:Run command with injected credentials'
         'proxy:Start credential injection proxy'
         'config:Manage configuration'
+        'mcp:Start MCP server'
         'completion:Generate shell completion script'
     )
 
@@ -231,6 +242,7 @@ complete -c trustless -f -n '__fish_use_subcommand' -a 'secret' -d 'Manage crede
 complete -c trustless -f -n '__fish_use_subcommand' -a 'run' -d 'Run command with injected credentials'
 complete -c trustless -f -n '__fish_use_subcommand' -a 'proxy' -d 'Start credential injection proxy'
 complete -c trustless -f -n '__fish_use_subcommand' -a 'config' -d 'Manage configuration'
+complete -c trustless -f -n '__fish_use_subcommand' -a 'mcp' -d 'Start MCP server'
 complete -c trustless -f -n '__fish_use_subcommand' -a 'completion' -d 'Generate shell completion script'
 
 # secret subcommands
