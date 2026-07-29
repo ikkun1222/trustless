@@ -157,6 +157,58 @@ export HTTPS_PROXY=http://127.0.0.1:8080
 
 **Config file location:** `~/.config/trustless/config.toml`
 
+### `trustless setup` — First-Time Setup Wizard
+
+Interactive wizard that automates the full first-time setup:
+
+```bash
+trustless setup
+```
+
+**4-step flow:**
+
+| Step | Action | Auto-detection |
+|------|--------|----------------|
+| [1/4] GPG Key | Detect existing key or batch-create RSA 3072 (no passphrase, 5y expiry) | Scans `gpg --list-secret-keys` |
+| [2/4] pass Store | Initialize pass store, git init | Checks `pass` availability |
+| [3/4] .env Import | Scan directories for .env files, parse KEY=VALUE, import to pass, backup originals | Walks `--import-dir` paths (default: `.`) |
+| [4/4] Agent Integration | Detect and suggest wrapping credentials for AI coding agents | Checks agent config files |
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--non-interactive` | Run in non-interactive mode (safe defaults, no prompts, no file removal) |
+| `--import-dir <dir>` | Directory to scan for .env files (repeatable, default: `.`) |
+
+**Agent detection currently supports:**
+- **OpenCode** — `~/.config/opencode/providers.yaml` / `opencode.json`
+- **Claude Code** — `~/.claude/claude_dotfiles/claude.env` / `~/.claude/.claude.env`
+- **Codex** — `~/.codex/config.toml`
+- **Hermes** — `~/.hermes/config.yaml`
+
+### `trustless doctor` — System Health Check
+
+Diagnostic tool that validates the entire trustless setup:
+
+```bash
+trustless doctor           # Human-readable output
+trustless doctor --json    # Structured JSON for cron/SIEM
+trustless doctor --fix     # Auto-resolve detected issues (stub)
+```
+
+**Health checks performed:**
+
+| Check | What it validates |
+|-------|-------------------|
+| GPG Key | Key exists, not expired, not expiring within 30 days |
+| pass Store | Store initialized, accessible, credential count |
+| gpg-agent | Agent process responding |
+| .env Security | Scans for plaintext .env files with credential patterns |
+| Agent Integration | OpenCode/Claude Code/Codex/Hermes trustless configuration status |
+| MITM CA | trustless CA certificate installation for `--mitm` proxy support |
+
+
 ```toml
 # Backend selection
 backend = "pass"
