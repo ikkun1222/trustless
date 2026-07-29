@@ -24,19 +24,19 @@ trustless: agent → 「GITHUB_TOKENを使って」→ broker が解決 → agen
 ### ワンライナー（Linux / macOS）
 
 ```bash
-curl -fsSL https://trustless.sh/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh
 ```
 
 最小インストール（CI/Docker用）:
 
 ```bash
-curl -fsSL https://trustless.sh/install.sh | sh -s -- --minimal
+curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --minimal
 ```
 
 アップグレード:
 
 ```bash
-curl -fsSL https://trustless.sh/install.sh | sh -s -- --update
+curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --update
 ```
 
 ### Go 1.26+ からビルド

@@ -3,9 +3,9 @@
 # Install script: https://github.com/ikkun1222/trustless
 #
 # Usage:
-#   curl -fsSL https://trustless.sh/install.sh | sh
-#   curl -fsSL https://trustless.sh/install.sh | sh -s -- --update
-#   curl -fsSL https://trustless.sh/install.sh | sh -s -- --minimal
+#   curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --update
+#   curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --minimal
 #
 # Options:
 #   --minimal    Install binary only, skip setup prompt
@@ -236,9 +236,9 @@ if [ "${1:-}" = "--help" ]; then
     echo "Install script v${VERSION}"
     echo ""
     echo "Usage:"
-    echo "  curl -fsSL https://trustless.sh/install.sh | sh"
-    echo "  curl -fsSL https://trustless.sh/install.sh | sh -s -- --minimal"
-    echo "  curl -fsSL https://trustless.sh/install.sh | sh -s -- --update"
+    echo "  curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh"
+    echo "  curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --minimal"
+    echo "  curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --update"
     echo ""
     echo "Options:"
     echo "  --minimal    Install binary only, skip setup prompt"

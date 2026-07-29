@@ -28,19 +28,19 @@ trustless:    agent → says "use GITHUB_TOKEN" → broker resolves → agent ge
 ### One-liner (Linux / macOS)
 
 ```bash
-curl -fsSL https://trustless.sh/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh
 ```
 
 To install without the setup prompt (for CI/Docker):
 
 ```bash
-curl -fsSL https://trustless.sh/install.sh | sh -s -- --minimal
+curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --minimal
 ```
 
 To upgrade an existing installation:
 
 ```bash
-curl -fsSL https://trustless.sh/install.sh | sh -s -- --update
+curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --update
 ```
 
 ### From source (Go 1.26+)
