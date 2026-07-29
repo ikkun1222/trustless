@@ -43,6 +43,7 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 
 	sanitizeFlag := fs.Bool("sanitize", true, "Enable output sanitization (default: true)")
 	sanitizePolicy := fs.String("sanitize-policy", "", "Path to custom redaction patterns file")
+	scanArgs := fs.Bool("scan-args", true, "Scan command arguments for credential patterns before spawning (fail closed)")
 
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: trustless run [flags] [--] <command> [args...]")
@@ -128,6 +129,14 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 					os.Exit(2)
 				}
 			}
+		}
+	}
+
+	if *scanArgs && s != nil {
+		if s.ContainsCredentials([]byte(strings.Join(cmdArgs, " ")), credValues) {
+			fmt.Fprintln(os.Stderr, "Error: command arguments contain credential patterns. Blocked by --scan-args.")
+			fmt.Fprintln(os.Stderr, "Use --scan-args=false to disable this check (not recommended).")
+			os.Exit(3)
 		}
 	}
 
