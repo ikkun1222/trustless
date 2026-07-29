@@ -29,7 +29,13 @@ func main() {
 	}
 
 	// Initialize backend
-	be := backend.NewPassBackend()
+	var be backend.Backend
+	switch cfg.Backend {
+	case "env":
+		be = backend.NewEnvBackend()
+	default:
+		be = backend.NewPassBackend()
+	}
 
 	cmd := os.Args[1]
 	args := os.Args[2:]
