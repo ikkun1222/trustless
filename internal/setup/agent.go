@@ -27,7 +27,7 @@ func fileExists(path string) bool {
 }
 
 const trustlessSkillMD = "# trustless-usage\n\n" +
-	"This project uses [trustless](https://github.com/ikkun1222/trustless) CLI for credential management.\n\n" +
+	"This machine uses [trustless](https://github.com/ikkun1222/trustless) CLI for credential management across all AI agent sessions.\n\n" +
 	"## Core Rules\n\n" +
 	"- **Never use plaintext .env files or hardcoded API keys.** All credentials are stored in the pass password store managed by trustless.\n" +
 	"- **The agent NEVER sees plaintext credential values.** trustless injects secrets into subprocess memory only.\n" +
