@@ -90,83 +90,20 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 		os.Exit(2)
 	}
 
-	if len(cmdArgs) > 0 {
-		var secretKeys []string
-		for _, spec := range secrets {
-			if colon := strings.Index(spec, ":"); colon >= 0 {
-				secretKeys = append(secretKeys, spec[:colon])
-			} else {
-				secretKeys = append(secretKeys, spec)
-			}
-		}
-		cmdBase := path.Base(cmdArgs[0])
-		if err := CheckPolicy(cmdBase, secretKeys, cfg.Policy); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(3)
-		}
+	secretKeys := extractSecretKeys(secrets)
+	cmdBase := path.Base(cmdArgs[0])
+	if err := CheckPolicy(cmdBase, secretKeys, cfg.Policy); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(3)
 	}
 
-	ctx := context.Background()
-	if *timeoutStr != "" {
-		d, err := time.ParseDuration(*timeoutStr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: invalid timeout: %v\n", err)
-			os.Exit(2)
-		}
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, d)
-		defer cancel()
-	}
+	ctx, cancel := buildContext(*timeoutStr)
+	defer cancel()
 
-	env := os.Environ()
-	var credValues []string
-	for _, spec := range secrets {
-		var secretKey, envName string
-		if colon := strings.Index(spec, ":"); colon >= 0 {
-			secretKey = spec[:colon]
-			envName = spec[colon+1:]
-		} else {
-			secretKey = spec
-			envName = envVarName(spec)
-		}
-		val, err := be.Resolve(ctx, secretKey)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(2)
-		}
-		env = append(env, envName+"="+val)
-		credValues = append(credValues, val)
-	}
+	env, credValues := resolveSecrets(ctx, secrets, be)
 
 	sanitize := *sanitizeFlag && cfg.RunDefaults.Sanitize
-
-	var s *scanner.Scanner
-	if sanitize {
-		s = scanner.New()
-		for _, p := range cfg.Sanitize.Patterns {
-			if err := s.AddPattern(p); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: invalid pattern in config: %v\n", err)
-				os.Exit(2)
-			}
-		}
-		if *sanitizePolicy != "" {
-			data, err := os.ReadFile(*sanitizePolicy)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: reading sanitize policy: %v\n", err)
-				os.Exit(2)
-			}
-			for _, line := range strings.Split(string(data), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-				if err := s.AddPattern(line); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: invalid pattern in policy file: %v\n", err)
-					os.Exit(2)
-				}
-			}
-		}
-	}
+	s := buildScanner(sanitize, cfg, *sanitizePolicy)
 
 	if *scanArgs && s != nil {
 		if s.ContainsCredentials([]byte(strings.Join(cmdArgs, " ")), credValues) {
@@ -190,6 +127,85 @@ func envVarName(key string) string {
 	last := path.Base(key)
 	last = strings.ReplaceAll(last, "-", "_")
 	return strings.ToUpper(last)
+}
+
+func extractSecretKeys(secrets stringSlice) []string {
+	var keys []string
+	for _, spec := range secrets {
+		if colon := strings.Index(spec, ":"); colon >= 0 {
+			keys = append(keys, spec[:colon])
+		} else {
+			keys = append(keys, spec)
+		}
+	}
+	return keys
+}
+
+func buildContext(timeoutStr string) (context.Context, context.CancelFunc) {
+	ctx := context.Background()
+	if timeoutStr == "" {
+		return ctx, func() {}
+	}
+	d, err := time.ParseDuration(timeoutStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid timeout: %v\n", err)
+		os.Exit(2)
+	}
+	return context.WithTimeout(ctx, d)
+}
+
+func resolveSecrets(ctx context.Context, secrets stringSlice, be backend.Backend) ([]string, []string) {
+	env := os.Environ()
+	var credValues []string
+	for _, spec := range secrets {
+		var secretKey, envName string
+		if colon := strings.Index(spec, ":"); colon >= 0 {
+			secretKey = spec[:colon]
+			envName = spec[colon+1:]
+		} else {
+			secretKey = spec
+			envName = envVarName(spec)
+		}
+		val, err := be.Resolve(ctx, secretKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(2)
+		}
+		env = append(env, envName+"="+val)
+		credValues = append(credValues, val)
+	}
+	return env, credValues
+}
+
+func buildScanner(sanitize bool, cfg *config.Config, sanitizePolicy string) *scanner.Scanner {
+	if !sanitize {
+		return nil
+	}
+	s := scanner.New()
+	for _, p := range cfg.Sanitize.Patterns {
+		if err := s.AddPattern(p); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid pattern in config: %v\n", err)
+			os.Exit(2)
+		}
+	}
+	if sanitizePolicy != "" {
+		data, err := os.ReadFile(sanitizePolicy)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: reading sanitize policy: %v\n", err)
+			os.Exit(2)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if err := s.AddPattern(line); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid pattern in policy file: %v\n", err)
+				os.Exit(2)
+			}
+		}
+	}
+	return s
 }
 
 // sanitizingWriter streams child output through the credential scanner line by
