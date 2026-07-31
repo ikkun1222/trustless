@@ -10,12 +10,12 @@ import (
 
 // Config represents the trustless configuration.
 type Config struct {
-	Backend     string           `toml:"backend"`
-	Output      string           `toml:"output"`
-	RunDefaults RunDefaults      `toml:"run_defaults"`
-	Proxy       ProxyConfig      `toml:"proxy"`
-	Sanitize    SanitizeConfig   `toml:"sanitize"`
-	Policy      PolicyConfig     `toml:"policy"`
+	Backend     string         `toml:"backend"`
+	Output      string         `toml:"output"`
+	RunDefaults RunDefaults    `toml:"run_defaults"`
+	Proxy       ProxyConfig    `toml:"proxy"`
+	Sanitize    SanitizeConfig `toml:"sanitize"`
+	Policy      PolicyConfig   `toml:"policy"`
 }
 
 type RunDefaults struct {
