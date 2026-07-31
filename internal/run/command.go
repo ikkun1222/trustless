@@ -21,7 +21,7 @@ import (
 
 type stringSlice []string
 
-func (s *stringSlice) String() string  { return strings.Join(*s, ",") }
+func (s *stringSlice) String() string { return strings.Join(*s, ",") }
 func (s *stringSlice) Set(v string) error {
 	*s = append(*s, v)
 	return nil
@@ -192,37 +192,72 @@ func envVarName(key string) string {
 	return strings.ToUpper(last)
 }
 
-func runPassthrough(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []string) {
-	if sanitize {
-		var stdoutBuf, stderrBuf bytes.Buffer
-		cmd.Stdout = &stdoutBuf
-		cmd.Stderr = &stderrBuf
-		if err := cmd.Run(); err != nil {
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
-				os.Stdout.Write(s.ScanWithValues(stdoutBuf.Bytes(), extraValues))
-				os.Stderr.Write(s.ScanWithValues(stderrBuf.Bytes(), extraValues))
-				os.Exit(exitErr.ExitCode())
-			}
-			os.Stdout.Write(s.ScanWithValues(stdoutBuf.Bytes(), extraValues))
-			os.Stderr.Write(s.ScanWithValues(stderrBuf.Bytes(), extraValues))
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+// sanitizingWriter streams child output through the credential scanner line by
+// line. Unlike the old buffered approach, long-running processes (ACP servers,
+// gateways) get their output flushed in real time instead of only at exit.
+type sanitizingWriter struct {
+	dst    io.Writer
+	s      *scanner.Scanner
+	values []string
+	buf    bytes.Buffer
+}
+
+func (w *sanitizingWriter) Write(p []byte) (int, error) {
+	w.buf.Write(p)
+	for {
+		i := bytes.IndexByte(w.buf.Bytes(), '\n')
+		if i < 0 {
+			break
 		}
-		os.Stdout.Write(s.ScanWithValues(stdoutBuf.Bytes(), extraValues))
-		os.Stderr.Write(s.ScanWithValues(stderrBuf.Bytes(), extraValues))
-		return
+		line := w.buf.Next(i + 1)
+		if _, err := w.dst.Write(w.s.ScanWithValues(line, w.values)); err != nil {
+			return len(p), err
+		}
 	}
+	return len(p), nil
+}
+
+func (w *sanitizingWriter) Flush() error {
+	if w.buf.Len() == 0 {
+		return nil
+	}
+	scanned := w.s.ScanWithValues(w.buf.Bytes(), w.values)
+	w.buf.Reset()
+	_, err := w.dst.Write(scanned)
+	return err
+}
+
+func runPassthrough(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []string) {
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var outW, errW *sanitizingWriter
+	if sanitize {
+		outW = &sanitizingWriter{dst: os.Stdout, s: s, values: extraValues}
+		errW = &sanitizingWriter{dst: os.Stderr, s: s, values: extraValues}
+		cmd.Stdout = outW
+		cmd.Stderr = errW
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 	if err := cmd.Run(); err != nil {
+		if outW != nil {
+			outW.Flush()
+		}
+		if errW != nil {
+			errW.Flush()
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.ExitCode())
 		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+	if outW != nil {
+		outW.Flush()
+	}
+	if errW != nil {
+		errW.Flush()
 	}
 }
 

@@ -112,8 +112,8 @@ trustless run -s GITHUB_TOKEN -s OPENAI_KEY -- gh pr list
 1. trustless resolves each `-s` key from the backend
 2. Spawns the subprocess with the credential value set as an environment variable
 3. The environment variable name is derived from the last path segment of the key, converted to `UPPER_SNAKE_CASE` (e.g. `iria/api/xai` → `XAI`)
-4. Captures stdout/stderr
-5. Scans output for credential patterns and **redacts** matches with `[REDACTED]`
+4. Forwards stdin to the subprocess and streams stdout/stderr
+5. Scans output (line by line) for credential patterns and **redacts** matches with `[REDACTED]`
 6. Returns sanitized output to the caller
 
 **Security features:**
@@ -121,6 +121,8 @@ trustless run -s GITHUB_TOKEN -s OPENAI_KEY -- gh pr list
 - **`--scan-args`** (default: `true`): Before spawning the subprocess, all command arguments are scanned for credential patterns and injected values. If detected, execution is blocked with exit code 3 (fail closed). This prevents the agent from accidentally exposing credential values in CLI arguments like `curl -H "Authorization: Bearer ***"`.
 - **`--sanitize`** (default: `true`): Scans and redacts credential patterns from subprocess output.
 - **Policy engine**: Command-level access control (see configuration section).
+
+**stdio protocols (ACP / MCP / LSP):** stdin is always forwarded to the child (fixed 2026-07-31), and output is sanitized **line-by-line in real time** so long-running processes (ACP servers, gateways) flush output instead of buffering until exit. For interactive JSON-RPC stdio servers, sanitizing the stream can corrupt protocol messages — pass `--sanitize=false` for those (e.g. `hermes acp`).
 
 | Flag | Description |
 |------|-------------|
