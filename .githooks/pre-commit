@@ -1,0 +1,12 @@
+#!/bin/sh
+# trustless pre-commit — 6 quality gates (opencode dev principles)
+# 1. tests  2. lint  3. complexity  4. LoC  5. secrets  6. audit(monthly)
+set -e
+
+echo "== pre-commit: make check =="
+make check
+
+echo "== pre-commit: secrets-check =="
+make secrets-check
+
+echo "== pre-commit: PASSED =="

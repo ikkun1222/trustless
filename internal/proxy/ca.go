@@ -161,10 +161,10 @@ func (ca *CA) LeafCert(hostname string) (tls.Certificate, error) {
 		Subject: pkix.Name{
 			CommonName: hostname,
 		},
-		DNSNames:   []string{hostname},
-		NotBefore:  now,
-		NotAfter:   now.Add(24 * time.Hour),
-		KeyUsage:   x509.KeyUsageDigitalSignature,
+		DNSNames:    []string{hostname},
+		NotBefore:   now,
+		NotAfter:    now.Add(24 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 
