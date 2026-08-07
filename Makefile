@@ -1,6 +1,6 @@
 # trustless — credential broker for AI agents
 # Quality gates: gofmt + go vet + gocyclo + go test -race + secrets
-.PHONY: build test vet fmt fmt-check lint complexity secrets-check audit check clean
+.PHONY: build test vet fmt fmt-check lint complexity secrets-check audit validate-plugin check clean
 
 build:
 	go build -o trustless .
@@ -41,7 +41,11 @@ secrets-check:
 audit:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-check: fmt-check vet complexity test
+# Agent Plugins 1.0.0 packaging validation (plugin.json / skills / mcp.json)
+validate-plugin:
+	python3 scripts/validate-plugin.py
+
+check: validate-plugin fmt-check vet complexity test
 
 clean:
 	rm -rf bin/

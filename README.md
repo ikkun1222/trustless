@@ -84,6 +84,27 @@ trustless proxy start --port 8080
 trustless mcp
 ```
 
+## Agent Plugins 1.0.0
+
+This repository is also packaged as an [Agent Plugins](https://agent-plugins.org) 1.0.0 plugin — the open, vendor-neutral standard for packaging Agent Skills and MCP servers into portable plugins. A single `plugin.json` manifest lets compatible clients discover the `trustless-usage` skill and the stdio MCP server from the fixed locations:
+
+```text
+trustless/
+├── plugin.json               # Agent Plugins 1.0.0 manifest ($schema + name required)
+├── skills/
+│   └── trustless-usage/
+│       └── SKILL.md          # Agent Skills spec-compliant (agentskills: true)
+├── mcp.json                  # stdio MCP server: `trustless mcp`
+├── schemas/                  # Vendored official 1.0.0 JSON Schemas (plugin + mcp)
+└── scripts/validate-plugin.py  # Packaging validation (wired into make check)
+```
+
+Both v1 component types are provided: the `trustless-usage` skill from `skills/`, and a stdio MCP server (`mcp.json`) exposing `resolve_credential`, `inject_run`, and `list_credentials` via `trustless mcp`.
+
+Agent Plugins–compatible clients at launch: **ChatGPT / Codex, Cursor, GitHub Copilot, Kiro, VS Code**. Install by cloning or vendoring the repo and pointing the client at the plugin root (the directory containing `plugin.json`).
+
+Validation: `make validate-plugin` (or `make check`) verifies the manifest against the closed schema, the `skills/` discovery layout, and `mcp.json` semantics using the vendored official schemas.
+
 ## Commands Reference
 
 ### `trustless secret` — Credential Store Operations
@@ -422,6 +443,13 @@ go test ./...
 
 ```
 ├── main.go                          # CLI entry point & subcommand dispatch
+├── plugin.json                      # Agent Plugins 1.0.0 manifest
+├── mcp.json                         # stdio MCP server config (`trustless mcp`)
+├── skills/
+│   └── trustless-usage/             # Agent Skills spec-compliant SKILL.md
+├── schemas/
+│   ├── plugin.schema.json           # Vendored official Agent Plugins schema
+│   └── mcp.schema.json              # Vendored official MCP config schema
 ├── internal/
 │   ├── backend/
 │   │   ├── backend.go               # Backend interface + types
@@ -442,6 +470,8 @@ go test ./...
 │   │   └── scanner_test.go          # Scanner tests
 │   └── secret/
 │       └── command.go               # Credential store operations
+├── scripts/
+│   └── validate-plugin.py           # Agent Plugins packaging validation
 └── docs/
     └── design.md                    # Architecture & design document
 ```
