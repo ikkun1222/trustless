@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "trustless",
+  "version": "0.1.0",
+  "description": "Credential broker CLI for AI agents. Injects credentials into subprocess memory — agent never sees plaintext values.",
+  "author": {
+    "name": "ikkun1222",
+    "url": "https://github.com/ikkun1222"
+  },
+  "homepage": "https://github.com/ikkun1222/trustless",
+  "repository": "https://github.com/ikkun1222/trustless",
+  "license": "MIT",
+  "keywords": [
+    "credentials",
+    "security",
+    "linux",
+    "pass",
+    "ai-agents",
+    "secrets"
+  ],
+  "extensions": {}
+}

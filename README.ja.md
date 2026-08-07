@@ -80,6 +80,27 @@ trustless proxy start --port 8080
 trustless mcp
 ```
 
+## Agent Plugins 1.0.0
+
+このリポジトリは [Agent Plugins](https://agent-plugins.org) 1.0.0 プラグインとしても配布可能です — Agent Skills と MCP サーバーをポータブルなプラグインにパッケージングする、オープンでベンダーニュートラルな標準規格。ルートの `plugin.json` 1枚で、対応クライアントが固定位置から `trustless-usage` スキルと stdio MCP サーバーを発見できます：
+
+```text
+trustless/
+├── plugin.json               # Agent Plugins 1.0.0 マニフェスト ($schema + name 必須)
+├── skills/
+│   └── trustless-usage/
+│       └── SKILL.md          # Agent Skills 仕様準拠 (agentskills: true)
+├── mcp.json                  # stdio MCP サーバー: `trustless mcp`
+├── schemas/                  # 公式 1.0.0 JSON Schema を vendoring (plugin + mcp)
+└── scripts/validate-plugin.py  # パッケージング検証（make check に組み込み）
+```
+
+v1 の両コンポーネント型に対応: `skills/` の `trustless-usage` スキルに加え、stdio MCP サーバー（`mcp.json`）が `trustless mcp` 経由で `resolve_credential` / `inject_run` / `list_credentials` の3ツールを提供します。
+
+ローンチ時対応クライアント: **ChatGPT / Codex、Cursor、GitHub Copilot、Kiro、VS Code**。リポジトリを clone / vendor し、クライアントにプラグインルート（`plugin.json` を含むディレクトリ）を指定するだけです。
+
+検証: `make validate-plugin`（または `make check`）で、クローズドスキーマへの準拠・`skills/` ディスカバリレイアウト・`mcp.json` セマンティクスを vendored 公式スキーマでチェックします。
+
 ## コマンドリファレンス
 
 ### `trustless secret` — 認証情報ストア操作
@@ -402,6 +423,13 @@ go test ./...
 
 ```
 ├── main.go                          # CLIエントリポイント & サブコマンドディスパッチ
+├── plugin.json                      # Agent Plugins 1.0.0 マニフェスト
+├── mcp.json                         # stdio MCP サーバー設定 (`trustless mcp`)
+├── skills/
+│   └── trustless-usage/             # Agent Skills 仕様準拠の SKILL.md
+├── schemas/
+│   ├── plugin.schema.json           # 公式 Agent Plugins スキーマ (vendored)
+│   └── mcp.schema.json              # 公式 MCP 設定スキーマ (vendored)
 ├── internal/
 │   ├── backend/
 │   │   ├── backend.go               # Backend インターフェース + 型定義
@@ -422,6 +450,8 @@ go test ./...
 │   │   └── scanner_test.go          # Scanner テスト
 │   └── secret/
 │       └── command.go               # 認証情報ストア操作
+├── scripts/
+│   └── validate-plugin.py           # Agent Plugins パッケージング検証
 └── docs/
     └── design.md                    # アーキテクチャ & 設計書
 ```
