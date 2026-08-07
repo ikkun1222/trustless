@@ -101,6 +101,8 @@ v1 の両コンポーネント型に対応: `skills/` の `trustless-usage` ス�
 
 検証: `make validate-plugin`（または `make check`）で、クローズドスキーマへの準拠・`skills/` ディスカバリレイアウト・`mcp.json` セマンティクスを vendored 公式スキーマでチェックします。
 
+**PATH 要件**: MCP の `command` は bare executable 名です。stdio サーバーを起動するクライアントでは `trustless` が `PATH` にある必要があります。
+
 ## コマンドリファレンス
 
 ### `trustless secret` — 認証情報ストア操作

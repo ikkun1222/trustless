@@ -105,6 +105,8 @@ Agent Plugins–compatible clients at launch: **ChatGPT / Codex, Cursor, GitHub 
 
 Validation: `make validate-plugin` (or `make check`) verifies the manifest against the closed schema, the `skills/` discovery layout, and `mcp.json` semantics using the vendored official schemas.
 
+**PATH requirement:** the MCP `command` is a bare executable name — `trustless` must be on `PATH` for clients that launch the stdio server.
+
 ## Commands Reference
 
 ### `trustless secret` — Credential Store Operations
