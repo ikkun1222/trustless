@@ -380,3 +380,24 @@ func Testコマンド成功はbw実行を返す(t *testing.T) {
 		}
 	}
 }
+
+func Testセッション失効判定はプロンプト要求も検知する(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{"not logged in", "bw list: exit status 1: You are not logged in.", true},
+		{"invalid session", "bw list: exit status 1: Invalid session.", true},
+		{"master password prompt", "bw list: exit status 1: ? Master password: [input is hidden]", true},
+		{"network error", "bw list: exit status 1: connect: connection refused", false},
+		{"timeout", "bw list: signal: killed", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSessionErr(&bwError{msg: tc.msg}); got != tc.want {
+				t.Fatalf("isSessionErr(%q) = %v, want %v", tc.msg, got, tc.want)
+			}
+		})
+	}
+}

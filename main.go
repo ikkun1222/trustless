@@ -35,10 +35,17 @@ func main() {
 	}
 
 	// Initialize backend
-	be := newBackend(cfg)
-
 	cmd := os.Args[1]
 	args := os.Args[2:]
+
+	// bw-unlock must run even when the session is invalid (that is its purpose),
+	// so it bypasses backend initialization entirely.
+	if cmd == "bw-unlock" {
+		runBWUnlock(args)
+		return
+	}
+
+	be := newBackend(cfg)
 
 	switch cmd {
 	case "secret":

@@ -53,12 +53,14 @@ type bwError struct {
 func (e *bwError) Error() string { return e.msg }
 
 // isSessionErr reports whether the bw CLI reported an authentication failure
-// (session expired or not logged in). Such failures always fail closed.
+// (session expired or not logged in). Such failures always fail closed. The
+// "master password" check catches the interactive unlock prompt that bw emits
+// when the session key is invalid (verified 2026-08-09).
 func isSessionErr(err error) bool {
 	var bwe *bwError
 	if errors.As(err, &bwe) {
 		s := strings.ToLower(bwe.msg)
-		return strings.Contains(s, "not logged in") || strings.Contains(s, "invalid session")
+		return strings.Contains(s, "not logged in") || strings.Contains(s, "invalid session") || strings.Contains(s, "master password")
 	}
 	return false
 }
@@ -152,6 +154,12 @@ func (b *BitwardenBackend) execBW(ctx context.Context, args []string) ([]byte, e
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, &bwError{msg: fmt.Sprintf("bw %s: %v: %s", args[0], err, strings.TrimSpace(string(out)))}
+	}
+	// With an invalid session key, bw exits 0 but emits its interactive
+	// "Master password" prompt on stdout (verified 2026-08-09). Treat that as
+	// a session error so callers fail closed instead of parsing prompt text.
+	if strings.Contains(strings.ToLower(string(out)), "master password") {
+		return nil, &bwError{msg: fmt.Sprintf("bw %s: session not valid (unlock prompt emitted)", args[0])}
 	}
 	return out, nil
 }
@@ -361,10 +369,11 @@ func loadCredentials(path string) (clientID, clientSecret string, err error) {
 
 // Unlock reads the master password from stdin, runs `bw unlock --raw`, and
 // persists the session key to the 600 session file. The master password never
-// touches argv, env, or disk (M-3).
+// touches argv, env, or disk (M-3). A trailing newline is required: bw CLI
+// reads the password from stdin up to the newline (verified 2026-08-09).
 func Unlock(bwPath, sessionPath string, password string) error {
 	cmd := exec.Command(bwPath, "unlock", "--raw")
-	cmd.Stdin = strings.NewReader(password)
+	cmd.Stdin = strings.NewReader(password + "\n")
 	out, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("bw unlock failed: %w", err)
