@@ -173,17 +173,19 @@ backend = "bitwarden"        # "pass"（従来・rollback 用）| "bitwarden"
 - **pass は read-only アーカイブ**（更新停止・GPG 暗号化のまま保持）
 - rollback（backend=pass 切替）は「**pass の最終同期時点の値**」にしか戻せないことを明記し、rollback 時は手動値検証を必須化（muse spark レビュー M3 への対応）
 
-### 5.2 移行スクリプト
+### 5.2 移行スクリプト（技術確認済み 2026-08-09）
 
 ```
 pass 全エントリ（40+）:
   pass show <key> → 1行目 = 値 / 2行目以降 = メタ
-  → Bitwarden secureNote アイテム作成:
+  → Bitwarden secureNote アイテム作成（bw create item・技術確認済み）:
      アイテム名 = <key> / fields[value, hidden] = 値 / notes = メタ
+     JSON は Base64 エンコード必須（bw create item <encodedJson>・stdin 可）
 ```
 
-- 既存アイテム（test-api-key 等）はスキップ or 上書き（事前確認）
-- 作成は bw CLI（`bw create item --session`）で JSON を渡す
+- **冪等**: 同名アイテムが既にあればスキップ（--dry-run で作成予定を先に確認）
+- 既存アイテム（test-api-key 等）は事前に確認してスキップ or 削除
+- 検証用比較スクリプト: pass と Bitwarden の全キー値を照合（差分ゼロが出口条件）
 
 ### 5.3 検証
 

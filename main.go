@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -33,13 +35,7 @@ func main() {
 	}
 
 	// Initialize backend
-	var be backend.Backend
-	switch cfg.Backend {
-	case "env":
-		be = backend.NewEnvBackend()
-	default:
-		be = backend.NewPassBackend()
-	}
+	be := newBackend(cfg)
 
 	cmd := os.Args[1]
 	args := os.Args[2:]
@@ -68,10 +64,30 @@ func main() {
 		doctor.Run(args)
 	case "setup":
 		setup.Run(args)
+	case "bw-unlock":
+		runBWUnlock(args)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
 		os.Exit(1)
+	}
+}
+
+// newBackend selects the credential backend from the config. Kept separate from
+// main to keep its cyclomatic complexity under the CCN 15 gate.
+func newBackend(cfg *config.Config) backend.Backend {
+	switch cfg.Backend {
+	case "env":
+		return backend.NewEnvBackend()
+	case "bitwarden":
+		bwb := backend.NewBitwardenBackend(backend.Options{})
+		if err := bwb.Load(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: bitwarden backend: %v\n", err)
+			os.Exit(1)
+		}
+		return bwb
+	default:
+		return backend.NewPassBackend()
 	}
 }
 
@@ -88,6 +104,86 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  trustless completion   Generate shell completion script")
 	fmt.Fprintln(os.Stderr, "  trustless doctor       System health check (--fix, --json)")
 	fmt.Fprintln(os.Stderr, "  trustless setup        First-time setup wizard (GPG, pass, .env migration)")
+	fmt.Fprintln(os.Stderr, "  trustless bw-unlock    Unlock the Bitwarden vault (session key via stdin)")
+}
+
+// runBWUnlock implements `trustless bw-unlock`: it prompts for the master
+// password on the terminal, runs `bw unlock --raw`, and stores the session key
+// in ~/.config/trustless/bw-session (chmod 600). The master password never
+// touches argv, environment, or disk (design §3.1 M-3).
+func runBWUnlock(args []string) {
+	if len(args) > 0 {
+		fmt.Fprintln(os.Stderr, "Usage: trustless bw-unlock")
+		fmt.Fprintln(os.Stderr, "Prompts for the Bitwarden master password via stdin; no arguments are accepted.")
+		os.Exit(1)
+	}
+
+	fmt.Fprint(os.Stderr, "Bitwarden master password: ")
+	pass, err := readPassword()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr)
+
+	sessionPath := configPath()
+	if err := backend.Unlock("bw", sessionPath, pass); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "Unlocked. Session key saved to %s\n", sessionPath)
+}
+
+// readPassword reads a line from stdin without echoing. Requires /dev/tty.
+func readPassword() (string, error) {
+	f, err := os.Open("/dev/tty")
+	if err != nil {
+		// Fallback for non-interactive stdin (CI, pipes): read a raw line.
+		return readLine(os.Stdin)
+	}
+	defer f.Close()
+
+	fd := int(f.Fd())
+	oldState, err := makeRaw(fd)
+	if err != nil {
+		return "", err
+	}
+	defer restoreTerm(fd, oldState)
+
+	line, err := readLine(f)
+	if err != nil {
+		return "", err
+	}
+	return line, nil
+}
+
+func readLine(r io.Reader) (string, error) {
+	var sb strings.Builder
+	buf := make([]byte, 1)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			if buf[0] == '\n' {
+				return strings.TrimSuffix(sb.String(), "\r"), nil
+			}
+			sb.WriteByte(buf[0])
+		}
+		if err != nil {
+			if err == io.EOF && sb.Len() > 0 {
+				return sb.String(), nil
+			}
+			return "", err
+		}
+	}
+}
+
+// configPath returns ~/.config/trustless (the directory holding bw-session).
+func configPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "trustless", "bw-session")
+	}
+	return filepath.Join(home, ".config", "trustless", "bw-session")
 }
 
 func runConfig(args []string, cfg *config.Config, cfgPath string) {
