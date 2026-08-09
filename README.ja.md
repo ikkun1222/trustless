@@ -57,6 +57,9 @@ go install github.com/ikkun1222/trustless@latest
 - **Go 1.26+**（ビルド用）
 - **`pass`**（Unixパスワードマネージャー）+ **`gpg`** — デフォルトのcredentialバックエンド
 - 環境変数のみを使う場合は `backend = "env"` で pass 不要
+- **`bw`**（Bitwarden CLI）は `backend = "bitwarden"`（クラウドストア）を使う場合のみ必要
+
+バックエンドは `trustless config set backend <name>` で切り替え可能: `pass`（デフォルト）/ `env` / `bitwarden`。Bitwarden バックエンドの設計は [docs/bitwarden-backend-design.md](docs/bitwarden-backend-design.md) 参照。
 
 ## クイックスタート
 
@@ -258,7 +261,7 @@ trustless doctor --fix     # 検出された問題を自動修復（スタブ）
 
 | キー | 説明 | デフォルト |
 |------|------|-----------|
-| `backend` | Credentialバックエンド（`pass` または `env`） | `pass` |
+| `backend` | Credentialバックエンド（`pass` / `env` / `bitwarden`） | `pass` |
 | `output` | デフォルト出力モード | `json` |
 | `run_defaults.sanitize` | サニタイズ有効/無効 | `true` |
 | `run_defaults.timeout` | サブプロセスタイムアウト | `5m` |
@@ -329,7 +332,7 @@ trustless version
 │       │             │              │              │     │
 │  ┌────┴─────────────┴──────────────┴──────────────┴──┐  │
 │  │              Backend Interface                     │  │
-│  │  (pass / env — 切り替え可能)                       │  │
+│  │  (pass / env / bitwarden — 切り替え可能)            │  │
 │  └──────────────────────┬────────────────────────────-┘  │
 └─────────────────────────┼──────────────────────────────┘
                           │
@@ -356,6 +359,7 @@ type Backend interface {
 実装済みバックエンド:
 - **`pass`**（デフォルト）— `pass show <key>` をラップ
 - **`env`** — CI/CD・コンテナ環境向け、環境変数から読み取り
+- **`bitwarden`** — `bw` CLI（`bw list items`）をラップ。secureNote の fields[name="value", type=1 hidden] / login.password / notes 1行目を解決。セッションキーは **BW_SESSION 環境変数のみ**で渡す（argv 禁止）。unlock は `trustless bw-unlock`（セッションキーは `~/.config/trustless/bw-session` に 0600 で保存）。セッション無効時は fail-closed。詳細: [docs/bitwarden-backend-design.md](docs/bitwarden-backend-design.md)
 
 `trustless config set backend <name>` で切り替え。
 

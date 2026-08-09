@@ -61,6 +61,9 @@ go install github.com/ikkun1222/trustless@latest
 - **Go 1.26+** for building from source
 - **`pass`** (the standard Unix password manager) + **`gpg`** — the default credential backend
 - Environment variables only (no `pass` needed) when using `backend = "env"`
+- **`bw`** (Bitwarden CLI) required only when using `backend = "bitwarden"` (cloud store)
+
+Backends are swappable via `trustless config set backend <name>`: `pass` (default), `env`, `bitwarden`. See [docs/bitwarden-backend-design.md](docs/bitwarden-backend-design.md) for the Bitwarden backend design.
 
 ## Quick Start
 
@@ -271,7 +274,7 @@ trustless doctor --fix     # Auto-resolve detected issues (stub)
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `backend` | Credential backend (`pass` or `env`) | `pass` |
+| `backend` | Credential backend (`pass`, `env`, `bitwarden`) | `pass` |
 | `output` | Default output mode | `json` |
 | `run_defaults.sanitize` | Enable sanitization by default | `true` |
 | `run_defaults.timeout` | Default subprocess timeout | `5m` |
@@ -341,7 +344,7 @@ trustless version
 │       │             │              │              │     │
 │  ┌────┴─────────────┴──────────────┴──────────────┴──┐  │
 │  │              Backend Interface                     │  │
-│  │  (pass / env — swappable)                         │  │
+│  │  (pass / env / bitwarden — swappable)            │  │
 │  └──────────────────────┬───────────────────────────-┘  │
 └─────────────────────────┼──────────────────────────────┘
                           │
@@ -368,6 +371,7 @@ type Backend interface {
 Implemented backends:
 - **`pass`** (default) — wraps `pass show <key>`, reads first line as secret
 - **`env`** — reads from environment variables via `os.Getenv()` (for CI/CD, containers)
+- **`bitwarden`** — wraps the `bw` CLI (`bw list items`), resolves secureNote `fields[value]` / login passwords / notes first line. Session key is passed via `BW_SESSION` env (never argv). Unlock via `trustless bw-unlock` (session key saved to `~/.config/trustless/bw-session`, 0600). Fails closed on invalid session. Details: [docs/bitwarden-backend-design.md](docs/bitwarden-backend-design.md)
 
 Configure via `trustless config set backend <name>`.
 
@@ -399,7 +403,7 @@ Configure via `trustless config set backend <name>`.
    - Proxy listens on `127.0.0.1` by default (not exposed to the network)
    - Unix socket mode available for file permission control
    - MITM proxy generates per-hostname ephemeral certificates (24h validity)
-   - Single binary with zero runtime dependencies beyond `pass` + `gpg`
+   - Single binary with zero runtime dependencies beyond `pass` + `gpg` (the `bitwarden` backend additionally requires the `bw` CLI)
 
 6. **No credential persistence in the broker process**
    - Credentials are resolved on-demand and released after the subprocess exits
