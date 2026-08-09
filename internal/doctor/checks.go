@@ -25,7 +25,7 @@ type CheckResult struct {
 	Status  CheckStatus
 	Message string
 	Fixable bool
-	Fix     func() error
+	Fix     func() error `json:"-"` // excluded: func types are not JSON-serializable (silent Encode failure otherwise)
 }
 
 type AgentCheckFn func(data []byte) bool
