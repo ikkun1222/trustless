@@ -44,6 +44,10 @@ const (
 // the bw CLI is unreachable (§3.1 H-3).
 const defaultCacheTTL = 24 * time.Hour
 
+// defaultSessionTTL is the default session state cache window when Options
+// does not set SessionCheckTTL. Zero means check on every Resolve.
+const defaultSessionTTL = 60 * time.Second
+
 // bwError indicates a Bitwarden CLI failure (session expiry, network, etc.).
 // Callers use it to decide between fail-closed and cache fallback.
 type bwError struct {
@@ -78,6 +82,21 @@ type BitwardenBackend struct {
 	cacheAt   time.Time
 	cacheInit bool
 
+	// sessionTTL bounds how often the bw session status is re-checked. Zero
+	// disables the cache (status checked on every Resolve). Load や list 成功時
+	// にセッション状態を初期化し、bw status の実行回数を削減する。
+	sessionTTL time.Duration
+
+	// sessionMu guards the session state cache below. Resolve はキャッシュ
+	// ミス時に b.mu を解放した後に sessionAlive を呼ぶため、別の mutex で
+	// セッション状態を保護してデータレースを防ぐ（Backend は concurrent
+	// safe を要求する）。
+	sessionMu sync.Mutex
+	// セッション状態のTTLキャッシュ。sessionCheckedAt がセットされていれば
+	// sessionValid の結果が TTL 内で再利用される。
+	sessionCheckedAt time.Time
+	sessionValid     bool
+
 	// runList runs `bw list items`; runStatus runs `bw status`. Overridable in
 	// tests via Options.
 	runList   func(ctx context.Context) ([]byte, error)
@@ -93,6 +112,9 @@ type Options struct {
 	BWPath string
 	// CacheTTL overrides the cache validity window. Defaults to 24h.
 	CacheTTL time.Duration
+	// SessionCheckTTL overrides how often the bw session status is re-checked
+	// during Resolve. Zero checks on every Resolve.
+	SessionCheckTTL time.Duration
 	// runList/runStatus are test-only hooks; leave nil in production.
 	runList   func(ctx context.Context) ([]byte, error)
 	runStatus func(ctx context.Context) ([]byte, error)
@@ -111,6 +133,11 @@ func NewBitwardenBackend(opts Options) *BitwardenBackend {
 		sessionPath: opts.SessionPath,
 		bw:          opts.BWPath,
 		cache:       make(map[string]string),
+		sessionTTL:  opts.SessionCheckTTL,
+	}
+	// TTL 未指定時のみデフォルトを適用する。明示指定（テスト含む）は優先する。
+	if opts.SessionCheckTTL == 0 {
+		b.sessionTTL = defaultSessionTTL
 	}
 	b.runList = opts.runList
 	if b.runList == nil {
@@ -190,12 +217,23 @@ func (b *BitwardenBackend) loadLocked(ctx context.Context) error {
 	return nil
 }
 
-// sessionAlive reports whether the current bw session is valid.
+// sessionAlive reports whether the current bw session is valid. TTL内は前回の
+// チェック結果を再利用し、TTL 超過時のみ bw status を実行して結果を更新する。
+// sessionTTL がゼロの場合は毎回チェックする（後方互換）。sessionMu で保護する
+// ため複数ゴルーチンから安全に呼べる。
 func (b *BitwardenBackend) sessionAlive(ctx context.Context) bool {
-	if _, err := b.runStatus(ctx); err != nil {
-		return false
+	b.sessionMu.Lock()
+	defer b.sessionMu.Unlock()
+	if b.sessionTTL > 0 && cacheFresh(b.sessionCheckedAt, time.Now(), b.sessionTTL) {
+		return b.sessionValid
 	}
-	return true
+	valid := true
+	if _, err := b.runStatus(ctx); err != nil {
+		valid = false
+	}
+	b.sessionCheckedAt = time.Now()
+	b.sessionValid = valid
+	return valid
 }
 
 // Resolve returns the value for key. When bw is unreachable it serves from the
