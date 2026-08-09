@@ -86,15 +86,42 @@ func TestアイテムマッピングLogin型はパスワードを値として扱
 	}
 }
 
-func TestアイテムマッピングNotesの1行目を後方互換で値として扱う(t *testing.T) {
+func TestアイテムマッピングNotes全体を値として扱う多行対応(t *testing.T) {
 	entries, err := parseBWItems([]byte(testItemsJSON))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 
 	val, ok := entries["legacy/key"]
-	if !ok || val != "the-value-line" {
-		t.Fatalf("notes fallback: got %q ok=%v", val, ok)
+	if !ok || val != "the-value-line\nmeta line" {
+		t.Fatalf("notes fallback (full notes): got %q ok=%v", val, ok)
+	}
+}
+
+// 多行の秘密（PEM 等）が notes に格納されている場合、全行を値として返す
+// （先頭1行のみに切断されないこと。2026-08-09 oci/api-key の再発防止）。
+func TestアイテムマッピングNotesの多行PEMを全行返す(t *testing.T) {
+	jsonData := `[
+  {
+    "id": "pem-1",
+    "name": "multiline/pem",
+    "type": 2,
+    "secureNote": {"type": 0},
+    "fields": [],
+    "notes": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj\n-----END PRIVATE KEY-----\n"
+  }
+]`
+	entries, err := parseBWItems([]byte(jsonData))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	val, ok := entries["multiline/pem"]
+	if !ok {
+		t.Fatalf("key not found")
+	}
+	want := "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj\n-----END PRIVATE KEY-----"
+	if val != want {
+		t.Fatalf("multiline notes: got %q want %q", val, want)
 	}
 }
 

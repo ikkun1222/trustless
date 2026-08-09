@@ -330,8 +330,11 @@ func parseBWItems(data []byte) (map[string]string, error) {
 				}
 			}
 		}
+		// notes フォールバック: 移行済み pass エントリの値。多行値（PEM・JSON 等）を
+		// 途中で切断しないよう notes 全体を使う（先頭1行のみでは oci/api-key の
+		// 多行 PEM が破損した — 2026-08-09 修正）。
 		if val == "" && it.Notes != "" {
-			val = strings.SplitN(it.Notes, "\n", 2)[0]
+			val = strings.TrimSpace(it.Notes)
 		}
 		if val != "" {
 			entries[it.Name] = val
