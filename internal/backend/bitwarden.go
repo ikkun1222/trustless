@@ -78,6 +78,10 @@ type BitwardenBackend struct {
 	cacheAt   time.Time
 	cacheInit bool
 
+	// sessionTTL bounds how often the bw session status is re-checked. Zero
+	// disables the cache (status checked on every Resolve).
+	sessionTTL time.Duration
+
 	// runList runs `bw list items`; runStatus runs `bw status`. Overridable in
 	// tests via Options.
 	runList   func(ctx context.Context) ([]byte, error)
@@ -93,6 +97,9 @@ type Options struct {
 	BWPath string
 	// CacheTTL overrides the cache validity window. Defaults to 24h.
 	CacheTTL time.Duration
+	// SessionCheckTTL overrides how often the bw session status is re-checked
+	// during Resolve. Zero checks on every Resolve.
+	SessionCheckTTL time.Duration
 	// runList/runStatus are test-only hooks; leave nil in production.
 	runList   func(ctx context.Context) ([]byte, error)
 	runStatus func(ctx context.Context) ([]byte, error)
@@ -111,6 +118,7 @@ func NewBitwardenBackend(opts Options) *BitwardenBackend {
 		sessionPath: opts.SessionPath,
 		bw:          opts.BWPath,
 		cache:       make(map[string]string),
+		sessionTTL:  opts.SessionCheckTTL,
 	}
 	b.runList = opts.runList
 	if b.runList == nil {

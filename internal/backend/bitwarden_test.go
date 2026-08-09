@@ -298,6 +298,71 @@ func Testセッション失効時はキャッシュを使わずfailClosed(t *tes
 	}
 }
 
+func Testセッション状態はTTL内はbwステータスを1回しか実行しない(t *testing.T) {
+	fake := &fakeBW{listOutput: testItemsJSON, listErr: nil}
+
+	be := NewBitwardenBackend(Options{
+		SessionPath:     filepath.Join(t.TempDir(), "bw-session"),
+		runList:         fake.runList,
+		SessionCheckTTL: time.Hour, // 将来実装: TTL内は status チェックをスキップ
+	})
+	if err := be.Load(context.Background()); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	for _, key := range []string{"iria/api/openrouter", "gh-api"} {
+		if _, err := be.Resolve(context.Background(), key); err != nil {
+			t.Fatalf("resolve %s: %v", key, err)
+		}
+	}
+
+	if fake.statusCalls != 1 {
+		t.Fatalf("expected bw status to run exactly once within TTL, got %d", fake.statusCalls)
+	}
+}
+
+func Testセッション状態はTTL経過後に再チェックする(t *testing.T) {
+	fake := &fakeBW{listOutput: testItemsJSON, listErr: nil}
+
+	be := NewBitwardenBackend(Options{
+		SessionPath:     filepath.Join(t.TempDir(), "bw-session"),
+		runList:         fake.runList,
+		SessionCheckTTL: time.Nanosecond, // TTL が即失効するため再チェックされる
+	})
+	if err := be.Load(context.Background()); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if _, err := be.Resolve(context.Background(), "iria/api/openrouter"); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, err := be.Resolve(context.Background(), "gh-api"); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	if fake.statusCalls < 2 {
+		t.Fatalf("expected bw status to re-run after TTL expiry, got %d calls", fake.statusCalls)
+	}
+}
+
+func Testセッション失効はTTLキャッシュがあってもfailClosedする(t *testing.T) {
+	fake := &fakeBW{listOutput: testItemsJSON, listErr: nil, statusErr: errTestSessionExpired}
+
+	be := NewBitwardenBackend(Options{
+		SessionPath:     filepath.Join(t.TempDir(), "bw-session"),
+		runList:         fake.runList,
+		SessionCheckTTL: time.Hour, // 将来実装: キャッシュがあっても失効は必ず fail-closed
+	})
+	if err := be.Load(context.Background()); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	fake.statusErr = errTestSessionExpired
+
+	if _, err := be.Resolve(context.Background(), "iria/api/openrouter"); err == nil {
+		t.Fatalf("expected fail-closed on session expiry even with TTL cache")
+	}
+}
+
 func Testアイテム欠落はErrNotFound(t *testing.T) {
 	fake := &fakeBW{listOutput: testItemsJSON, listErr: nil}
 
@@ -337,10 +402,11 @@ type fakeBWError struct{ msg string }
 func (e *fakeBWError) Error() string { return e.msg }
 
 type fakeBW struct {
-	listOutput string
-	listErr    error
-	statusErr  error
-	listCalls  int
+	listOutput  string
+	listErr     error
+	statusErr   error
+	listCalls   int
+	statusCalls int
 }
 
 func (f *fakeBW) runList(ctx context.Context) ([]byte, error) {
@@ -349,6 +415,7 @@ func (f *fakeBW) runList(ctx context.Context) ([]byte, error) {
 }
 
 func (f *fakeBW) runStatus(ctx context.Context) ([]byte, error) {
+	f.statusCalls++
 	return nil, f.statusErr
 }
 
