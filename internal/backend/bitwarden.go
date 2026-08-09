@@ -87,6 +87,11 @@ type BitwardenBackend struct {
 	// にセッション状態を初期化し、bw status の実行回数を削減する。
 	sessionTTL time.Duration
 
+	// sessionMu guards the session state cache below. Resolve はキャッシュ
+	// ミス時に b.mu を解放した後に sessionAlive を呼ぶため、別の mutex で
+	// セッション状態を保護してデータレースを防ぐ（Backend は concurrent
+	// safe を要求する）。
+	sessionMu sync.Mutex
 	// セッション状態のTTLキャッシュ。sessionCheckedAt がセットされていれば
 	// sessionValid の結果が TTL 内で再利用される。
 	sessionCheckedAt time.Time
@@ -214,8 +219,11 @@ func (b *BitwardenBackend) loadLocked(ctx context.Context) error {
 
 // sessionAlive reports whether the current bw session is valid. TTL内は前回の
 // チェック結果を再利用し、TTL 超過時のみ bw status を実行して結果を更新する。
-// sessionTTL がゼロの場合は毎回チェックする（後方互換）。
+// sessionTTL がゼロの場合は毎回チェックする（後方互換）。sessionMu で保護する
+// ため複数ゴルーチンから安全に呼べる。
 func (b *BitwardenBackend) sessionAlive(ctx context.Context) bool {
+	b.sessionMu.Lock()
+	defer b.sessionMu.Unlock()
 	if b.sessionTTL > 0 && cacheFresh(b.sessionCheckedAt, time.Now(), b.sessionTTL) {
 		return b.sessionValid
 	}

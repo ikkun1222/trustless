@@ -2,9 +2,11 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -468,5 +470,43 @@ func Testセッション失効判定はプロンプト要求も検知する(t *t
 				t.Fatalf("isSessionErr(%q) = %v, want %v", tc.msg, got, tc.want)
 			}
 		})
+	}
+}
+
+func Testセッション状態キャッシュは並行Resolveで安全(t *testing.T) {
+	fake := &fakeBW{listOutput: testItemsJSON, listErr: nil}
+
+	be := NewBitwardenBackend(Options{
+		SessionPath:     filepath.Join(t.TempDir(), "bw-session"),
+		runList:         fake.runList,
+		runStatus:       fake.runStatus,
+		SessionCheckTTL: time.Hour,
+	})
+	if err := be.Load(context.Background()); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	const goroutines = 16
+	const iters = 50
+	keys := []string{"iria/api/openrouter", "gh-api", "legacy/key"}
+	var wg sync.WaitGroup
+	errCh := make(chan error, goroutines*iters)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				key := keys[(g+i)%len(keys)]
+				if _, err := be.Resolve(context.Background(), key); err != nil {
+					errCh <- fmt.Errorf("resolve %s: %w", key, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
 	}
 }
