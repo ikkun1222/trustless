@@ -304,6 +304,7 @@ func Testセッション状態はTTL内はbwステータスを1回しか実行�
 	be := NewBitwardenBackend(Options{
 		SessionPath:     filepath.Join(t.TempDir(), "bw-session"),
 		runList:         fake.runList,
+		runStatus:       fake.runStatus,
 		SessionCheckTTL: time.Hour, // 将来実装: TTL内は status チェックをスキップ
 	})
 	if err := be.Load(context.Background()); err != nil {
@@ -327,6 +328,7 @@ func Testセッション状態はTTL経過後に再チェックする(t *testing
 	be := NewBitwardenBackend(Options{
 		SessionPath:     filepath.Join(t.TempDir(), "bw-session"),
 		runList:         fake.runList,
+		runStatus:       fake.runStatus,
 		SessionCheckTTL: time.Nanosecond, // TTL が即失効するため再チェックされる
 	})
 	if err := be.Load(context.Background()); err != nil {
