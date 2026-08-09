@@ -79,6 +79,12 @@ timestamp: 2026-08-09
 //   ただしキャッシュ TTL 24h 超 + bw 不達 → fail-closed（exit 非0）
 //   セッション失効時は常に fail-closed（キャッシュ不使用）
 //   再取得は明示的 refresh（cron 定期 sync と連動）
+// セッション状態キャッシュ（2026-08-09 追加）:
+//   sessionAlive の bw status 実行を TTL（デフォルト 60s）でキャッシュし、
+//   Resolve ごとの subprocess 呼び出しを排除。1プロセスで複数秘密を解決する
+//   ケース（例: hermes acp が 19 秘密を順次解決）で bw status を 1 回に削減。
+//   失効検知は最大 TTL 分遅延するが fail-closed は維持（SessionCheckTTL で調整可、
+//   ゼロ指定で毎回チェックの後方互換）。並行 Resolve は sessionMu で保護。
 ```
 
 #### アイテムマッピング（fields hidden 方式）
