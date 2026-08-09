@@ -92,14 +92,6 @@ For HTTPS interception (MITM):
 trustless proxy start --port 8080 --mitm
 ```
 
-## MCP Mode
-
-Start a Model Context Protocol (stdio) server exposing `resolve_credential`, `inject_run`, and `list_credentials` tools:
-
-```
-trustless mcp
-```
-
 ## First-Time Setup
 
 ```

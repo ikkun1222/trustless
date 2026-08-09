@@ -41,7 +41,7 @@ secrets-check:
 audit:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-# Agent Plugins 1.0.0 packaging validation (plugin.json / skills / mcp.json)
+# Agent Plugins 1.0.0 packaging validation (plugin.json / skills)
 validate-plugin:
 	python3 scripts/validate-plugin.py
 

@@ -4,8 +4,8 @@
 Checks the spec's normative requirements that matter for this repo, without
 requiring a JSON Schema engine (stdlib only). The vendored official schemas
 under schemas/ are the source of truth; this script covers the rules the
-schema cannot express (path containment, skills/ discovery, mcp.json
-$schema-version match with plugin.json) plus the closed-schema essentials.
+schema cannot express (path containment, skills/ discovery) plus the
+closed-schema essentials.
 
 Exit code: 0 = valid, 1 = invalid.
 Output: one JSON object on stdout (machine-readable).
@@ -19,7 +19,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
-MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 # Spec §5.2: closed top-level manifest schema.
 PLUGIN_FIELDS = {
     "$schema", "name", "version", "description", "author",
@@ -28,8 +27,6 @@ PLUGIN_FIELDS = {
 # Spec §5.5: name constraints.
 NAME_RE = re.compile(r"^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
 AUTHOR_FIELDS = {"name", "email", "url"}
-# Spec §7.2.1: closed union of MCP server variants.
-MCP_TYPES = {"stdio", "streamable-http", "sse"}
 
 errors: list[str] = []
 
@@ -117,48 +114,6 @@ def validate_skills() -> None:
         fail("skills/: no skills discovered — expected trustless-usage (spec §7.1)")
 
 
-def validate_mcp() -> None:
-    path = ROOT / "mcp.json"
-    if not path.is_file():
-        return  # §6.2: absent mcp.json is valid.
-    doc = load_json(path)
-    if not isinstance(doc, dict):
-        fail("mcp.json: top-level value must be an object (spec §7.2.1)")
-        return
-    if doc.get("$schema") != MCP_SCHEMA:
-        fail(f"mcp.json: $schema must be {MCP_SCHEMA} (spec §7.2.1)")
-    plugin_doc = load_json(ROOT / "plugin.json") if (ROOT / "plugin.json").is_file() else None
-    if isinstance(plugin_doc, dict) and isinstance(doc.get("$schema"), str):
-        pv = _schema_version(plugin_doc.get("$schema"))
-        mv = _schema_version(doc["$schema"])
-        if pv and mv and pv != mv:
-            fail(f"mcp.json: $schema version {mv} must match plugin.json version {pv} (spec §10.1)")
-    servers = doc.get("mcpServers")
-    if not isinstance(servers, dict):
-        fail("mcp.json: mcpServers must be an object (spec §7.2.1)")
-        return
-    for name, entry in servers.items():
-        if not isinstance(entry, dict):
-            fail(f"mcp.json: server '{name}' must be an object")
-            continue
-        stype = entry.get("type")
-        if stype not in MCP_TYPES:
-            fail(f"mcp.json: server '{name}' has unknown type {stype!r} (spec §7.2.1)")
-            continue
-        if stype == "stdio":
-            if not isinstance(entry.get("command"), str) or not entry["command"]:
-                fail(f"mcp.json: server '{name}' requires non-empty command")
-            command = entry["command"]
-            if not (command.startswith("./") or (not command.startswith(("/", "\\", ".")))):
-                fail(f"mcp.json: server '{name}' command must be bare or ./-relative (spec §7.2.1)")
-            if "PLUGIN_ROOT" in command or "PLUGIN_DATA" in command:
-                fail(f"mcp.json: server '{name}' command must not contain placeholders (spec §9.2)")
-        else:  # streamable-http / sse
-            url = entry.get("url")
-            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-                fail(f"mcp.json: server '{name}' url must be absolute http(s) (spec §7.2.1)")
-
-
 def _schema_version(schema_url: object) -> str:
     """Extract the Agent Plugins version from a canonical schema URL.
 
@@ -173,7 +128,6 @@ def _schema_version(schema_url: object) -> str:
 def main() -> int:
     validate_plugin()
     validate_skills()
-    validate_mcp()
     result = {
         "valid": not errors,
         "plugin_root": str(ROOT),

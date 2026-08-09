@@ -78,14 +78,11 @@ trustless run -s iria/api/xai -- curl -s https://api.x.ai/v1/models
 
 # 認証情報プロキシ起動
 trustless proxy start --port 8080
-
-# MCPサーバー起動（AIエージェント統合用）
-trustless mcp
 ```
 
 ## Agent Plugins 1.0.0
 
-このリポジトリは [Agent Plugins](https://agent-plugins.org) 1.0.0 プラグインとしても配布可能です — Agent Skills と MCP サーバーをポータブルなプラグインにパッケージングする、オープンでベンダーニュートラルな標準規格。ルートの `plugin.json` 1枚で、対応クライアントが固定位置から `trustless-usage` スキルと stdio MCP サーバーを発見できます：
+このリポジトリは [Agent Plugins](https://agent-plugins.org) 1.0.0 プラグインとしても配布可能です — Agent Skills をポータブルなプラグインにパッケージングする、オープンでベンダーニュートラルな標準規格。ルートの `plugin.json` 1枚で、対応クライアントが固定位置から `trustless-usage` スキルを発見できます：
 
 ```text
 trustless/
@@ -93,18 +90,16 @@ trustless/
 ├── skills/
 │   └── trustless-usage/
 │       └── SKILL.md          # Agent Skills 仕様準拠 (agentskills: true)
-├── mcp.json                  # stdio MCP サーバー: `trustless mcp`
-├── schemas/                  # 公式 1.0.0 JSON Schema を vendoring (plugin + mcp)
+├── schemas/
+│   └── plugin.schema.json    # 公式 1.0.0 プラグイン JSON Schema (vendored)
 └── scripts/validate-plugin.py  # パッケージング検証（make check に組み込み）
 ```
 
-v1 の両コンポーネント型に対応: `skills/` の `trustless-usage` スキルに加え、stdio MCP サーバー（`mcp.json`）が `trustless mcp` 経由で `resolve_credential` / `inject_run` / `list_credentials` の3ツールを提供します。
+プラグインは `trustless-usage` スキルを同梱し、エージェントにcredential管理のルール（`trustless run` で注入、`trustless secret set` で登録、平文保存禁止）を教えます。
 
 ローンチ時対応クライアント: **ChatGPT / Codex、Cursor、GitHub Copilot、Kiro、VS Code**。リポジトリを clone / vendor し、クライアントにプラグインルート（`plugin.json` を含むディレクトリ）を指定するだけです。
 
-検証: `make validate-plugin`（または `make check`）で、クローズドスキーマへの準拠・`skills/` ディスカバリレイアウト・`mcp.json` セマンティクスを vendored 公式スキーマでチェックします。
-
-**PATH 要件**: MCP の `command` は bare executable 名です。stdio サーバーを起動するクライアントでは `trustless` が `PATH` にある必要があります。
+検証: `make validate-plugin`（または `make check`）で、クローズドスキーマへの準拠と `skills/` ディスカバリレイアウトを vendored 公式スキーマでチェックします。
 
 ## コマンドリファレンス
 
@@ -181,24 +176,6 @@ export HTTPS_PROXY=http://127.0.0.1:8080
 | `--port <n>` | 待受ポート (デフォルト: 8080) |
 | `--unix-socket <path>` | Unixソケットで待受（ファイルパーミッション制御） |
 | `--mitm` | MITMモード有効化（HTTPSインターセプション） |
-
-### `trustless mcp` — MCPサーバーモード
-
-AIエージェントが直接認証情報を解決するための stdio ベース MCP (Model Context Protocol) サーバー。
-
-```bash
-trustless mcp
-```
-
-[JSON-RPC 2.0](https://www.jsonrpc.org/specification) over stdin/stdout で動作し、以下のツールを提供:
-
-| ツール | 説明 | 入力 |
-|--------|------|------|
-| `resolve_credential` | 認証情報を解決して値を返す | `{"key": "..."}` |
-| `inject_run` | 認証情報注入してコマンド実行 | `{"secrets": [...], "command": [...], "sanitize": true}` |
-| `list_credentials` | 認証情報キー一覧 | `{}` |
-
-**プロトコル:** MCP 2024-11-05。Hermes、Claude Code、Codex、Cursor など MCP 対応のAIエージェントと互換性あり。
 
 ### `trustless setup` — 初回セットアップウィザード
 
@@ -317,24 +294,24 @@ trustless version
 │                   AI Agent (Hermes / LLM)                │
 │  "DATABASE_URL を使って psql 実行"                       │
 └────────────────────┬────────────────────────────────────┘
-                     │ CLI / HTTP / MCP
+                     │ CLI / HTTP
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │                   trustless CLI                          │
 │                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐ │
-│  │ secret   │  │ run      │  │ proxy    │  │ mcp    │ │
-│  │ (一覧/   │  │ (サブプ  │  │ (HTTP    │  │ (MCP   │ │
-│  │  取得/   │  │  ロセス  │  │  プロキ  │  │  stdio │ │
-│  │  保存)   │  │  注入)   │  │  シ+     │  │ サーバ│ │
-│  └────┬─────┘  └────┬─────┘  │  MITM)   │  │ ー)   │ │
-│       │             │        └─────┬─────┘  └────┬───┘ │
-│       │             │              │              │     │
-│  ┌────┴─────────────┴──────────────┴──────────────┴──┐  │
-│  │              Backend Interface                     │  │
-│  │  (pass / env / bitwarden — 切り替え可能)            │  │
-│  └──────────────────────┬────────────────────────────-┘  │
-└─────────────────────────┼──────────────────────────────┘
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│  │ secret   │  │ run      │  │ proxy    │              │
+│  │ (一覧/   │  │ (サブプ  │  │ (HTTP    │              │
+│  │  取得/   │  │  ロセス  │  │  プロキ  │              │
+│  │  保存)   │  │  注入)   │  │  シ+     │              │
+│  └────┬─────┘  └────┬─────┘  │  MITM)   │              │
+│       │             │        └─────┬─────┘              │
+│       │             │              │                    │
+│  ┌────┴─────────────┴──────────────┴─────┐              │
+│  │            Backend Interface          │              │
+│  │  (pass / env / bitwarden — 切り替え可能) │            │
+│  └─────────────────────┬──────────────────┘             │
+└────────────────────────┼────────────────────────────────┘
                           │
             ┌─────────────┴─────────────┐
             │                           │
@@ -430,12 +407,10 @@ go test ./...
 ```
 ├── main.go                          # CLIエントリポイント & サブコマンドディスパッチ
 ├── plugin.json                      # Agent Plugins 1.0.0 マニフェスト
-├── mcp.json                         # stdio MCP サーバー設定 (`trustless mcp`)
 ├── skills/
 │   └── trustless-usage/             # Agent Skills 仕様準拠の SKILL.md
 ├── schemas/
-│   ├── plugin.schema.json           # 公式 Agent Plugins スキーマ (vendored)
-│   └── mcp.schema.json              # 公式 MCP 設定スキーマ (vendored)
+│   └── plugin.schema.json           # 公式 Agent Plugins スキーマ (vendored)
 ├── internal/
 │   ├── backend/
 │   │   ├── backend.go               # Backend インターフェース + 型定義
@@ -443,8 +418,6 @@ go test ./...
 │   │   └── pass.go                  # Pass CLI バックエンド実装
 │   ├── config/
 │   │   └── config.go                # TOML 設定読み込み/保存 (+ ポリシー型)
-│   ├── mcp/
-│   │   └── server.go                # MCPサーバー (JSON-RPC 2.0 over stdio)
 │   ├── proxy/
 │   │   ├── ca.go                    # MITM CA 証明書生成
 │   │   ├── command.go               # HTTPフォワードプロキシ (認証情報置換)

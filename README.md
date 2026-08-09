@@ -82,14 +82,11 @@ trustless run -s iria/api/xai -- curl -s https://api.x.ai/v1/models
 
 # Start the credential proxy
 trustless proxy start --port 8080
-
-# Start MCP server for AI agent integration
-trustless mcp
 ```
 
 ## Agent Plugins 1.0.0
 
-This repository is also packaged as an [Agent Plugins](https://agent-plugins.org) 1.0.0 plugin — the open, vendor-neutral standard for packaging Agent Skills and MCP servers into portable plugins. A single `plugin.json` manifest lets compatible clients discover the `trustless-usage` skill and the stdio MCP server from the fixed locations:
+This repository is also packaged as an [Agent Plugins](https://agent-plugins.org) 1.0.0 plugin — the open, vendor-neutral standard for packaging Agent Skills into portable plugins. A single `plugin.json` manifest lets compatible clients discover the `trustless-usage` skill from the fixed location:
 
 ```text
 trustless/
@@ -97,18 +94,16 @@ trustless/
 ├── skills/
 │   └── trustless-usage/
 │       └── SKILL.md          # Agent Skills spec-compliant (agentskills: true)
-├── mcp.json                  # stdio MCP server: `trustless mcp`
-├── schemas/                  # Vendored official 1.0.0 JSON Schemas (plugin + mcp)
+├── schemas/
+│   └── plugin.schema.json    # Vendored official 1.0.0 plugin JSON Schema
 └── scripts/validate-plugin.py  # Packaging validation (wired into make check)
 ```
 
-Both v1 component types are provided: the `trustless-usage` skill from `skills/`, and a stdio MCP server (`mcp.json`) exposing `resolve_credential`, `inject_run`, and `list_credentials` via `trustless mcp`.
+The plugin ships the `trustless-usage` skill, which teaches agents the credential conventions (`trustless run` for injection, `trustless secret set` for registration, no plaintext persistence).
 
 Agent Plugins–compatible clients at launch: **ChatGPT / Codex, Cursor, GitHub Copilot, Kiro, VS Code**. Install by cloning or vendoring the repo and pointing the client at the plugin root (the directory containing `plugin.json`).
 
-Validation: `make validate-plugin` (or `make check`) verifies the manifest against the closed schema, the `skills/` discovery layout, and `mcp.json` semantics using the vendored official schemas.
-
-**PATH requirement:** the MCP `command` is a bare executable name — `trustless` must be on `PATH` for clients that launch the stdio server.
+Validation: `make validate-plugin` (or `make check`) verifies the manifest against the closed schema and the `skills/` discovery layout using the vendored official schema.
 
 ## Commands Reference
 
@@ -194,24 +189,6 @@ export HTTPS_PROXY=http://127.0.0.1:8080
 | `--mitm` | Enable MITM mode (intercept HTTPS for placeholder substitution) |
 
 HTTPS CONNECT tunneling is supported. Without `--mitm`, CONNECT requests pass through without modification. With `--mitm`, the connection is intercepted and placeholder substitution applies.
-
-### `trustless mcp` — MCP Server Mode
-
-Start a stdio-based MCP (Model Context Protocol) server for AI agents to resolve credentials directly.
-
-```bash
-trustless mcp
-```
-
-The server implements [JSON-RPC 2.0](https://www.jsonrpc.org/specification) over stdin/stdout with these tools:
-
-| Tool | Description | Input |
-|------|-------------|-------|
-| `resolve_credential` | Resolve and return a credential value | `{"key": "..."}` |
-| `inject_run` | Run a command with credential injection | `{"secrets": [...], "command": [...], "sanitize": true}` |
-| `list_credentials` | List all credential keys | `{}` |
-
-**Protocol:** MCP 2024-11-05. Compatible with any MCP-compatible AI agent (Hermes, Claude Code, Codex, Cursor, etc.).
 
 ### `trustless setup` — First-Time Setup Wizard
 
@@ -330,23 +307,23 @@ trustless version
 │                   AI Agent (Hermes / LLM)                │
 │  "run psql with DATABASE_URL"                            │
 └────────────────────┬────────────────────────────────────┘
-                     │ CLI / HTTP / MCP
+                     │ CLI / HTTP
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │                   trustless CLI                          │
 │                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐ │
-│  │ secret   │  │ run      │  │ proxy    │  │ mcp    │ │
-│  │ (list/   │  │ (subproc │  │ (HTTP    │  │ (MCP   │ │
-│  │  get/set)│  │  inject) │  │  proxy + │  │  stdio │ │
-│  └────┬─────┘  └────┬─────┘  │  MITM)   │  │ server)│ │
-│       │             │        └─────┬─────┘  └────┬───┘ │
-│       │             │              │              │     │
-│  ┌────┴─────────────┴──────────────┴──────────────┴──┐  │
-│  │              Backend Interface                     │  │
-│  │  (pass / env / bitwarden — swappable)            │  │
-│  └──────────────────────┬───────────────────────────-┘  │
-└─────────────────────────┼──────────────────────────────┘
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│  │ secret   │  │ run      │  │ proxy    │              │
+│  │ (list/   │  │ (subproc │  │ (HTTP    │              │
+│  │  get/set)│  │  inject) │  │  proxy + │              │
+│  └────┬─────┘  └────┬─────┘  │  MITM)   │              │
+│       │             │        └─────┬─────┘              │
+│       │             │              │                    │
+│  ┌────┴─────────────┴──────────────┴─────┐              │
+│  │            Backend Interface          │              │
+│  │  (pass / env / bitwarden — swappable) │              │
+│  └─────────────────────┬──────────────────┘             │
+└────────────────────────┼────────────────────────────────┘
                           │
             ┌─────────────┴─────────────┐
             │                           │
@@ -450,12 +427,10 @@ go test ./...
 ```
 ├── main.go                          # CLI entry point & subcommand dispatch
 ├── plugin.json                      # Agent Plugins 1.0.0 manifest
-├── mcp.json                         # stdio MCP server config (`trustless mcp`)
 ├── skills/
 │   └── trustless-usage/             # Agent Skills spec-compliant SKILL.md
 ├── schemas/
-│   ├── plugin.schema.json           # Vendored official Agent Plugins schema
-│   └── mcp.schema.json              # Vendored official MCP config schema
+│   └── plugin.schema.json           # Vendored official Agent Plugins schema
 ├── internal/
 │   ├── backend/
 │   │   ├── backend.go               # Backend interface + types
@@ -463,8 +438,6 @@ go test ./...
 │   │   └── pass.go                  # Pass CLI backend implementation
 │   ├── config/
 │   │   └── config.go                # TOML config loading/saving (+ policy types)
-│   ├── mcp/
-│   │   └── server.go                # MCP server (JSON-RPC 2.0 over stdio)
 │   ├── proxy/
 │   │   ├── ca.go                    # MITM CA certificate generation
 │   │   ├── command.go               # HTTP forward proxy with credential substitution
