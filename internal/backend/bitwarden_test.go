@@ -618,10 +618,10 @@ func TestSetは新しいキーでbwCreateItemを呼びキャッシュを更新�
 		t.Fatalf("expected 1 bw exec call, got %d: %v", len(fake.execArgs), fake.execArgs)
 	}
 	got := fake.execArgs[0]
-	if len(got) != 4 || got[0] != "create" || got[1] != "item" || got[2] != "--encoded" {
+	if len(got) != 3 || got[0] != "create" || got[1] != "item" {
 		t.Fatalf("create item args = %v", got)
 	}
-	item := decodeItemPayload(t, got[3])
+	item := decodeItemPayload(t, got[2])
 	if item["name"] != "new/key" {
 		t.Fatalf("payload name = %v, want new/key", item["name"])
 	}
@@ -681,7 +681,7 @@ func TestSetは既存キーでbwGetとbwEditを呼び上書きする(t *testing.
 	}
 }
 
-// checkGetEditCalls は Set が get item <id> と edit item <id> --encoded
+// checkGetEditCalls は Set が get item <id> と edit item <id> <payload>
 // （ペイロードの hidden field value が wantValue）を呼んだことを検証する。
 func checkGetEditCalls(t *testing.T, fake *fakeBW, id, wantValue string) {
 	t.Helper()
@@ -693,10 +693,10 @@ func checkGetEditCalls(t *testing.T, fake *fakeBW, id, wantValue string) {
 		t.Fatalf("get item args = %v", getArgs)
 	}
 	editArgs := fake.execArgs[1]
-	if len(editArgs) != 5 || editArgs[0] != "edit" || editArgs[1] != "item" || editArgs[2] != id || editArgs[3] != "--encoded" {
+	if len(editArgs) != 4 || editArgs[0] != "edit" || editArgs[1] != "item" || editArgs[2] != id {
 		t.Fatalf("edit item args = %v", editArgs)
 	}
-	item := decodeItemPayload(t, editArgs[4])
+	item := decodeItemPayload(t, editArgs[3])
 	fields, _ := item["fields"].([]any)
 	if len(fields) != 1 {
 		t.Fatalf("edit payload fields = %v", item["fields"])

@@ -341,7 +341,7 @@ func (b *BitwardenBackend) Set(ctx context.Context, key, value string) error {
 
 	if id == "" {
 		payload := setItemJSON(key, value)
-		if _, err := b.execBW(ctx, []string{"create", "item", "--encoded", payload}); err != nil {
+		if _, err := b.execBW(ctx, []string{"create", "item", payload}); err != nil {
 			return err
 		}
 	} else {
@@ -354,7 +354,7 @@ func (b *BitwardenBackend) Set(ctx context.Context, key, value string) error {
 			return err
 		}
 		payload := base64.StdEncoding.EncodeToString(updated)
-		if _, err := b.execBW(ctx, []string{"edit", "item", id, "--encoded", payload}); err != nil {
+		if _, err := b.execBW(ctx, []string{"edit", "item", id, payload}); err != nil {
 			return err
 		}
 	}
