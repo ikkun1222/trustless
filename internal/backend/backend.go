@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -24,6 +25,9 @@ func (e *ErrNotFound) Error() string {
 	return fmt.Sprintf("credential %q not found", e.Key)
 }
 
+// ErrReadOnly is returned when a backend does not support writes (env).
+var ErrReadOnly = errors.New("backend is read-only")
+
 // Backend is the interface for credential storage backends.
 // Implementations must be safe for concurrent use.
 type Backend interface {
@@ -32,4 +36,8 @@ type Backend interface {
 
 	// List returns all available credential keys.
 	List(ctx context.Context) ([]Entry, error)
+
+	// Set stores (creates or replaces) the secret value for the given key.
+	// Backends that cannot persist (e.g. env) return ErrReadOnly.
+	Set(ctx context.Context, key, value string) error
 }

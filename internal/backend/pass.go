@@ -69,6 +69,18 @@ func (p *PassBackend) List(ctx context.Context) ([]Entry, error) {
 	return entries, nil
 }
 
+// Set stores a secret in pass, replacing any existing value. The value is fed
+// via stdin so it never appears on argv (ps / shell history leak).
+func (p *PassBackend) Set(ctx context.Context, key, value string) error {
+	cmd := exec.CommandContext(ctx, "pass", "insert", "--force", key)
+	cmd.Stdin = strings.NewReader(value + "\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pass insert %s: %w: %s", key, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // passStoreDir returns the pass password store directory.
 func passStoreDir() string {
 	if d := os.Getenv("PASSWORD_STORE_DIR"); d != "" {

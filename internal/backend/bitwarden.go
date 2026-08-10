@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -301,6 +302,110 @@ func (b *BitwardenBackend) List(ctx context.Context) ([]Entry, error) {
 		entries = append(entries, Entry{Key: k})
 	}
 	return entries, nil
+}
+
+// Set stores or replaces the secret for key with upsert semantics: an
+// existing item is updated in place (keeping its notes and other fields),
+// a new key is created as a secureNote with a hidden field named "value" —
+// the same shape parseBWItems reads back. The in-memory cache is refreshed
+// afterwards so Resolve sees the new value immediately.
+func (b *BitwardenBackend) Set(ctx context.Context, key, value string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	out, err := b.runList(ctx)
+	if err != nil {
+		return err
+	}
+	var items []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(out, &items); err != nil {
+		return fmt.Errorf("parse bw list items: %w", err)
+	}
+	id := ""
+	for _, it := range items {
+		if it.Name == key {
+			id = it.ID
+			break
+		}
+	}
+
+	if id == "" {
+		payload := setItemJSON(key, value)
+		if _, err := b.execBW(ctx, []string{"create", "item", "--encoded", payload}); err != nil {
+			return err
+		}
+	} else {
+		raw, err := b.execBW(ctx, []string{"get", "item", id})
+		if err != nil {
+			return err
+		}
+		updated, err := setValueField(raw, value)
+		if err != nil {
+			return err
+		}
+		payload := base64.StdEncoding.EncodeToString(updated)
+		if _, err := b.execBW(ctx, []string{"edit", "item", id, "--encoded", payload}); err != nil {
+			return err
+		}
+	}
+
+	// Refresh the cache so subsequent Resolve calls return the new value.
+	return b.loadLocked(ctx)
+}
+
+// setItemJSON builds the base64-encoded JSON payload for a new secureNote
+// item holding the secret in a hidden field named "value".
+func setItemJSON(key, value string) string {
+	item := map[string]any{
+		"organizationId": nil,
+		"folderId":       nil,
+		"type":           itemTypeSecureNote,
+		"name":           key,
+		"notes":          nil,
+		"favorite":       false,
+		"fields": []map[string]any{
+			{"name": "value", "value": value, "type": fieldTypeHidden, "linkedId": nil},
+		},
+		"secureNote": map[string]any{"type": 0},
+		"card":       nil,
+		"identity":   nil,
+		"login":      nil,
+		"reprompt":   0,
+	}
+	b, _ := json.Marshal(item)
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// setValueField replaces the hidden "value" field in a bw item JSON while
+// keeping every other field and the notes intact (e.g. legacy notes-only
+// items). Appends the field when the item has none.
+func setValueField(raw []byte, value string) ([]byte, error) {
+	var item map[string]any
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return nil, fmt.Errorf("parse bw item: %w", err)
+	}
+	fields, _ := item["fields"].([]any)
+	replaced := false
+	for i := range fields {
+		f, ok := fields[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := f["name"].(string); name == "value" {
+			f["value"] = value
+			f["type"] = float64(fieldTypeHidden)
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		fields = append(fields, map[string]any{"name": "value", "value": value, "type": fieldTypeHidden})
+	}
+	item["fields"] = fields
+	return json.Marshal(item)
 }
 
 // parseBWItems maps bw list items output to key → value.

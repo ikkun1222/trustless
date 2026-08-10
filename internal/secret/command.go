@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/ikkun1222/trustless/internal/backend"
@@ -38,7 +38,21 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 		if len(args) >= 3 {
 			val = args[2]
 		}
-		set(key, val)
+		if val == "" {
+			// Read the value from stdin (pipe or tty) so it never appears on
+			// argv (ps / shell history leak).
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: read value from stdin: %v\n", err)
+				os.Exit(1)
+			}
+			val = strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+		}
+		if err := be.Set(context.Background(), key, val); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Stored %s\n", key)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown secret subcommand: %s\n", args[0])
 		printUsage()
@@ -94,21 +108,6 @@ func get(be backend.Backend, key string) {
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func set(key, value string) {
-	cmd := exec.Command("pass", "insert", "--force", key)
-	if value != "" {
-		cmd.Stdin = strings.NewReader(value + "\n")
-	}
-
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: pass insert %s: %v\n", key, err)
 		os.Exit(1)
 	}
 }
