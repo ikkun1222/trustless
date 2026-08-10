@@ -2,3 +2,6 @@ trustless
 opencode-task-*.md
 /tmp/
 *.test
+
+# Hermes plan files
+.hermes/
