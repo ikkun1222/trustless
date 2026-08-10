@@ -98,10 +98,11 @@ type BitwardenBackend struct {
 	sessionCheckedAt time.Time
 	sessionValid     bool
 
-	// runList runs `bw list items`; runStatus runs `bw status`. Overridable in
-	// tests via Options.
+	// runList runs `bw list items`; runStatus runs `bw status`; runExec runs
+	// arbitrary bw commands. Overridable in tests via Options.
 	runList   func(ctx context.Context) ([]byte, error)
 	runStatus func(ctx context.Context) ([]byte, error)
+	runExec   func(ctx context.Context, args []string) ([]byte, error)
 }
 
 // Options configures a BitwardenBackend. Zero values select defaults.
@@ -116,9 +117,10 @@ type Options struct {
 	// SessionCheckTTL overrides how often the bw session status is re-checked
 	// during Resolve. Zero checks on every Resolve.
 	SessionCheckTTL time.Duration
-	// runList/runStatus are test-only hooks; leave nil in production.
+	// runList/runStatus/runExec are test-only hooks; leave nil in production.
 	runList   func(ctx context.Context) ([]byte, error)
 	runStatus func(ctx context.Context) ([]byte, error)
+	runExec   func(ctx context.Context, args []string) ([]byte, error)
 }
 
 // NewBitwardenBackend returns a backend that loads the session key lazily.
@@ -152,6 +154,7 @@ func NewBitwardenBackend(opts Options) *BitwardenBackend {
 			return b.execBW(ctx, []string{"status"})
 		}
 	}
+	b.runExec = opts.runExec
 	return b
 }
 
@@ -172,8 +175,12 @@ func buildBWCommand(bwPath string, args []string, sessionKey string) *exec.Cmd {
 	return cmd
 }
 
-// execBW runs bw with the session key passed via BW_SESSION (H-1).
+// execBW runs bw with the session key passed via BW_SESSION (H-1). A test
+// hook (runExec) set via Options short-circuits the real CLI.
 func (b *BitwardenBackend) execBW(ctx context.Context, args []string) ([]byte, error) {
+	if b.runExec != nil {
+		return b.runExec(ctx, args)
+	}
 	key, err := loadSession(b.sessionPath)
 	if err != nil {
 		return nil, err
