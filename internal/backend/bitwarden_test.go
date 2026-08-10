@@ -2,6 +2,8 @@ package backend
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -420,6 +422,177 @@ func Testリスト出力のbwエラーはプロパゲート(t *testing.T) {
 	})
 	if err := be.Load(context.Background()); err == nil {
 		t.Fatalf("expected load error when bw list fails")
+	}
+}
+
+func TestSetValueFieldは既存のhiddenValueフィールドを置換し他を保持(t *testing.T) {
+	raw := []byte(`{
+	  "id": "item-1",
+	  "name": "iria/api/openrouter",
+	  "type": 2,
+	  "secureNote": {"type": 0},
+	  "fields": [
+	    {"name": "value", "type": 1, "value": "sk-or-v1-secret"},
+	    {"name": "note", "type": 0, "value": "keep-me"}
+	  ],
+	  "notes": "created 2026-01-01\nfor openrouter",
+	  "favorite": true
+	}`)
+
+	updated, err := setValueField(raw, "new-secret")
+	if err != nil {
+		t.Fatalf("setValueField: %v", err)
+	}
+
+	var got bwItemFixture
+	if err := json.Unmarshal(updated, &got); err != nil {
+		t.Fatalf("unmarshal updated item: %v", err)
+	}
+
+	checkIdentityFieldsPreserved(t, &got)
+	checkValueFieldReplaced(t, &got)
+}
+
+// bwItemFixture は setValueField のテストで使う bw item の JSON マッピング。
+type bwItemFixture struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Type       int    `json:"type"`
+	SecureNote *struct {
+		Type int `json:"type"`
+	} `json:"secureNote"`
+	Fields []struct {
+		Name  string `json:"name"`
+		Type  int    `json:"type"`
+		Value string `json:"value"`
+	} `json:"fields"`
+	Notes    string `json:"notes"`
+	Favorite bool   `json:"favorite"`
+}
+
+func checkIdentityFieldsPreserved(t *testing.T, got *bwItemFixture) {
+	t.Helper()
+	if got.ID != "item-1" || got.Name != "iria/api/openrouter" || got.Type != 2 {
+		t.Fatalf("identity fields changed: id=%q name=%q type=%d", got.ID, got.Name, got.Type)
+	}
+	if got.SecureNote == nil || got.SecureNote.Type != 0 {
+		t.Fatalf("secureNote changed: %+v", got.SecureNote)
+	}
+	if got.Notes != "created 2026-01-01\nfor openrouter" {
+		t.Fatalf("notes changed: %q", got.Notes)
+	}
+	if !got.Favorite {
+		t.Fatalf("favorite dropped")
+	}
+}
+
+func checkValueFieldReplaced(t *testing.T, got *bwItemFixture) {
+	t.Helper()
+	if len(got.Fields) != 2 {
+		t.Fatalf("field count = %d, want 2", len(got.Fields))
+	}
+	if got.Fields[0].Name != "value" || got.Fields[0].Value != "new-secret" || got.Fields[0].Type != 1 {
+		t.Fatalf("value field: %+v", got.Fields[0])
+	}
+	if got.Fields[1].Name != "note" || got.Fields[1].Value != "keep-me" {
+		t.Fatalf("other field changed: %+v", got.Fields[1])
+	}
+}
+
+func TestSetValueFieldはfieldsが無いアイテムにhiddenValueを追加(t *testing.T) {
+	raw := []byte(`{
+	  "id": "item-2",
+	  "name": "legacy/key",
+	  "type": 2,
+	  "secureNote": {"type": 0},
+	  "notes": "old"
+	}`)
+
+	updated, err := setValueField(raw, "new-value")
+	if err != nil {
+		t.Fatalf("setValueField: %v", err)
+	}
+
+	var got struct {
+		Fields []struct {
+			Name  string `json:"name"`
+			Type  int    `json:"type"`
+			Value string `json:"value"`
+		} `json:"fields"`
+		Notes string `json:"notes"`
+	}
+	if err := json.Unmarshal(updated, &got); err != nil {
+		t.Fatalf("unmarshal updated item: %v", err)
+	}
+	if len(got.Fields) != 1 {
+		t.Fatalf("field count = %d, want 1", len(got.Fields))
+	}
+	f := got.Fields[0]
+	if f.Name != "value" || f.Value != "new-value" || f.Type != 1 {
+		t.Fatalf("appended field = %+v, want hidden type=1 name=value", f)
+	}
+	if got.Notes != "old" {
+		t.Fatalf("notes changed: %q", got.Notes)
+	}
+}
+
+func TestSetItemJSONはsecureNoteとhiddenValueフィールドを生成(t *testing.T) {
+	payload := setItemJSON("new/key", "sekrit")
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatalf("base64 decode: %v", err)
+	}
+
+	var got struct {
+		Type       int `json:"type"`
+		SecureNote struct {
+			Type int `json:"type"`
+		} `json:"secureNote"`
+		Name   string `json:"name"`
+		Fields []struct {
+			Name  string `json:"name"`
+			Type  int    `json:"type"`
+			Value string `json:"value"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(decoded, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Type != itemTypeSecureNote {
+		t.Fatalf("type = %d, want %d (secureNote)", got.Type, itemTypeSecureNote)
+	}
+	if got.Name != "new/key" {
+		t.Fatalf("name = %q", got.Name)
+	}
+	if len(got.Fields) != 1 {
+		t.Fatalf("field count = %d, want 1", len(got.Fields))
+	}
+	f := got.Fields[0]
+	if f.Name != "value" || f.Type != fieldTypeHidden || f.Value != "sekrit" {
+		t.Fatalf("field = %+v, want hidden type=1 name=value", f)
+	}
+}
+
+func TestSetItemJSONはエンコード値が元のvalueと一致(t *testing.T) {
+	const want = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj\n-----END PRIVATE KEY-----"
+	payload := setItemJSON("multiline/pem", want)
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatalf("base64 decode: %v", err)
+	}
+
+	var got struct {
+		Fields []struct {
+			Name  string `json:"name"`
+			Type  int    `json:"type"`
+			Value string `json:"value"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(decoded, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Fields) != 1 || got.Fields[0].Value != want {
+		t.Fatalf("round-trip value mismatch: got %q, want %q", got.Fields[0].Value, want)
 	}
 }
 
