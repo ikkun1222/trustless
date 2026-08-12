@@ -171,6 +171,25 @@ export HTTPS_PROXY=http://127.0.0.1:8080
 
 **Placeholder format:** `__<KEY_NAME>__` — double underscores surrounding an uppercase key name. Resolution tries the lowercase key as a pass entry first, then falls back to `iria/api/<lowercase_key>`.
 
+**Host-based injection rules (config `[proxy.rules]`):** inject a credential header automatically for requests to a specific host. The agent sends a plain request — no placeholder needed. The header is injected only if the target header is absent; unresolved keys fail open (no injection).
+
+```toml
+[proxy.rules]
+"api.x.ai" = { header = "Authorization", key = "xai", prefix = "Bearer " }
+"api.edinet-fsa.go.jp" = { header = "Ocp-Apim-Subscription-Key", key = "edinet" }
+```
+
+- `header`: header name to inject
+- `key`: credential key (same resolution as placeholders: lowercase → pass, fallback `iria/api/<key>`)
+- `prefix` / `suffix`: value wrapping (e.g. `Bearer ` prefix)
+
+**Egress allowlist (config `proxy.allowlist`):** when set, only listed hosts are permitted through the proxy; all other requests are rejected with `403 Forbidden`. Empty/absent = all hosts allowed (backwards compatible).
+
+```toml
+[proxy]
+allowlist = ["api.x.ai", "api.edinet-fsa.go.jp"]
+```
+
 **MITM mode (`--mitm`):**
 - Enables HTTPS interception for placeholder substitution in encrypted requests
 - Auto-generates a root CA certificate at `~/.config/trustless/trustless-ca.{crt,key}` on first use

@@ -23,6 +23,7 @@ type Proxy struct {
 	backend   backend.Backend
 	port      int
 	unixPath  string
+	rules     map[string]config.ProxyRule
 	allowlist []string
 	ca        *CA
 }
@@ -42,7 +43,68 @@ func (p *Proxy) replacePlaceholders(s string) string {
 	})
 }
 
+// resolveKey resolves a credential key using the placeholder resolution rule:
+// lowercase(key) -> pass key, fallback: iria/api/lowercase(key).
+func (p *Proxy) resolveKey(key string) (string, bool) {
+	val, err := p.backend.Resolve(context.Background(), strings.ToLower(key))
+	if err == nil {
+		return val, true
+	}
+	val2, err2 := p.backend.Resolve(context.Background(), "iria/api/"+strings.ToLower(key))
+	if err2 != nil {
+		return "", false
+	}
+	return val2, true
+}
+
+// hostOnly strips the port from a host:port string.
+func hostOnly(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
+}
+
+// allowedHost checks the host against the allowlist. An empty allowlist
+// permits all hosts (backwards compatible). Otherwise only listed hosts pass.
+func (p *Proxy) allowedHost(host string) bool {
+	if len(p.allowlist) == 0 {
+		return true
+	}
+	h := hostOnly(host)
+	for _, a := range p.allowlist {
+		if a == h {
+			return true
+		}
+	}
+	return false
+}
+
+// injectByHost applies host-based credential injection rules. If the request
+// host matches a rule and the target header is absent, the resolved credential
+// is injected (prefix + value + suffix).
+func (p *Proxy) injectByHost(r *http.Request) {
+	host := hostOnly(r.Host)
+	if host == "" {
+		host = hostOnly(r.URL.Host)
+	}
+	rule, ok := p.rules[host]
+	if !ok {
+		return
+	}
+	if r.Header.Get(rule.Header) != "" {
+		return // header already set: leave it untouched
+	}
+	val, ok := p.resolveKey(rule.Key)
+	if !ok {
+		return // fail-open: unresolved key is not injected
+	}
+	r.Header.Set(rule.Header, rule.Prefix+val+rule.Suffix)
+}
+
 func (p *Proxy) substituteRequest(r *http.Request) {
+	p.injectByHost(r)
+
 	r.URL.RawQuery = p.replacePlaceholders(r.URL.RawQuery)
 
 	for key, values := range r.Header {
@@ -63,6 +125,10 @@ func (p *Proxy) substituteRequest(r *http.Request) {
 }
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	if !p.allowedHost(r.Host) {
+		http.Error(w, "host not allowed by proxy allowlist", http.StatusForbidden)
+		return
+	}
 	outReq, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -89,6 +155,10 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
+	if !p.allowedHost(r.Host) {
+		http.Error(w, "host not allowed by proxy allowlist", http.StatusForbidden)
+		return
+	}
 	targetConn, err := net.Dial("tcp", r.Host)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -200,9 +270,11 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 	}
 
 	p := &Proxy{
-		backend:  be,
-		port:     *port,
-		unixPath: *unixSocket,
+		backend:   be,
+		port:      *port,
+		unixPath:  *unixSocket,
+		rules:     cfg.Proxy.Rules,
+		allowlist: cfg.Proxy.Allowlist,
 	}
 
 	if *mitm {

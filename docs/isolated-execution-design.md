@@ -114,12 +114,16 @@ trustless の `run`（サブプロセス注入）は、エージェントと同�
 ## 8. 実装ステップ（承認後）
 
 1. ~~PoC~~ ✅ **完了**（上記 §7。プレースホルダ注入は現行実装で動作確認済み）
-2. **ホストベース注入ルール**の設計・実装（config: host → header/key マッピング）
-3. **allowlist（デフォルトdeny）** 実装
-4. テスト追加（proxy注入の回帰テスト）
-5. systemd 常駐化 + エージェント環境（HTTPS_PROXY）への適用
-6. DLP-proxy 統合の検討
-7. 実運用: A群キーのエージェント利用を run → proxy に移行
+2. **ホストベース注入ルール**の設計・実装 ✅ **完了**（2026-08-12, feature/trustless-proxy-hostrules）
+   - config `[proxy.rules]`: host → {header, key, prefix, suffix}
+   - 素のリクエストに自動注入（既存ヘッダーは上書きしない・未解決キーはfail-open）
+   - allowlist（デフォルト全許可・設定時のみ許可ホスト限定、違反は403）
+   - テスト9件追加（注入/上書き/ルール外/allowlist）・実機E2E検証済み
+3. ~~allowlist（デフォルトdeny）~~ ✅ **完了**（上記2に含む・実機403確認済み）
+4. テスト追加 ✅ **完了**（proxy回帰テスト9件・make check 70 passed）
+5. **systemd 常駐化 + エージェント環境（HTTPS_PROXY）への適用** — 未着手
+6. DLP-proxy 統合の検討 — 未着手
+7. 実運用: A群キーのエージェント利用を run → proxy に移行 — 未着手
 
 ## 9. 参考（既存ソリューション）
 
