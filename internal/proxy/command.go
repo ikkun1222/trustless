@@ -165,25 +165,14 @@ func (p *Proxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) Start(ctx context.Context) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodConnect {
-			if p.ca != nil {
-				p.mitmHandleCONNECT(w, r, p.ca)
-			} else {
-				p.handleCONNECT(w, r)
-			}
-			return
-		}
-		p.handleHTTP(w, r)
-	})
+	handler := p.handler()
 
 	listener, err := p.listen()
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Handler: handler}
 
 	go func() {
 		<-ctx.Done()
@@ -194,6 +183,27 @@ func (p *Proxy) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// handler returns the top-level http.Handler. Go's ServeMux routes CONNECT
+// requests by host, not path, so a "/" pattern never matches them (404).
+// CONNECT is therefore handled explicitly before delegating to the mux.
+func (p *Proxy) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		p.handleHTTP(w, r)
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			if p.ca != nil {
+				p.mitmHandleCONNECT(w, r, p.ca)
+			} else {
+				p.handleCONNECT(w, r)
+			}
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (p *Proxy) listen() (net.Listener, error) {

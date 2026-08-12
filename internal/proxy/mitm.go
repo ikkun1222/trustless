@@ -25,7 +25,7 @@ func (p *Proxy) mitmHandleCONNECT(w http.ResponseWriter, r *http.Request, ca *CA
 
 	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
-	host := r.Host
+	host := hostOnly(r.Host)
 	leafCert, err := ca.LeafCert(host)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -51,7 +51,7 @@ func (p *Proxy) mitmHandleCONNECT(w http.ResponseWriter, r *http.Request, ca *CA
 	p.substituteRequest(req)
 
 	upstreamTLS := &tls.Config{InsecureSkipVerify: true}
-	upstream, err := tls.Dial("tcp", host, upstreamTLS)
+	upstream, err := tls.Dial("tcp", r.Host, upstreamTLS)
 	if err != nil {
 		return
 	}

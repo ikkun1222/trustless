@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/ikkun1222/trustless/internal/backend"
@@ -180,6 +181,38 @@ func TestProxyallowlist空は全許可(t *testing.T) {
 
 	if !p.allowedHost("anything.example.com") {
 		t.Fatal("empty allowlist must permit all hosts (backwards compatible)")
+	}
+}
+
+func TestProxyCONNECTリクエストは404にならずトンネル処理される(t *testing.T) {
+	// Go の ServeMux は CONNECT をホストでルーティングするため "/" パターンに
+	// マッチせず 404 になるバグがあった。handler() は CONNECT を明示的に処理する。
+	p := newTestProxy(nil, nil)
+	h := p.handler()
+
+	rec := httptest.NewRecorder()
+	req := httptestNewRequest(http.MethodConnect, "https://127.0.0.1:1/")
+	req.Host = "127.0.0.1:1"
+	h.ServeHTTP(rec, req)
+
+	// CONNECT はトンネル処理に入る（接続先ポート1が閉じているので 502）。
+	// 404 でないことが「mux に落ちていない」ことの証明になる。
+	if rec.Code != http.StatusBadGateway && rec.Code != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 502 (tunnel attempt) or 200, not 404", rec.Code)
+	}
+}
+
+func TestProxy通常リクエストはmux経由で処理される(t *testing.T) {
+	p := newTestProxy(nil, nil)
+	h := p.handler()
+
+	rec := httptest.NewRecorder()
+	req := httptestNewRequest(http.MethodGet, "http://127.0.0.1:1/")
+	h.ServeHTTP(rec, req)
+
+	// 上流接続（ポート1）に失敗するので 502 になる（404 ではない = mux 経由の証拠）
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("GET status = %d, want 502 (upstream unreachable)", rec.Code)
 	}
 }
 
