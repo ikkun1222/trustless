@@ -53,6 +53,25 @@ trustless の `run`（サブプロセス注入）は、エージェントと同�
 - OAuth: clasp/oauth, google-cloud/oauth-credentials, google-cloud/config-default
 - その他: xiaomi/credentials, vercel-ai-gateway(429フォールバック用)
 
+## 4.5 B群の棚卸し結果（2026-08-13）
+
+**結論: B群は全て「エージェントが実行しない場所」で使用される。コンセプトと矛盾しない。**
+
+| キー | 実利用 | エージェント関与 | 扱い |
+|---|---|---|---|
+| turso/url + turso/token | cron 03:05 turso-state-sync | なし（cron直接実行） | ✅ 現状維持。ただしHTTP API（Bearer）なので**プロキシ注入に移行可能**（優先度低） |
+| vercel-ai-gateway | Hermes configに存在せず休眠 | — | ⚠️ 休眠。使用再開時にA群（プロキシ注入）として登録 |
+| google-cloud/google-token-json | GCP系ツール（エージェント外） | なし | ✅ 現状維持 |
+| google-cloud/oauth-credentials, config-default | 同上 | なし | ✅ 現状維持 |
+| clasp/oauth | clasp（GAS開発） | なし | ✅ 現状維持 |
+| xiaomi/credentials, token-json | xiaomi-fitness-sync cron | なし | ✅ 現状維持 |
+
+**原則（文書化）:**
+- エージェント外（cron/開発ツール）での`run`/`secret get`利用はコンセプト違反ではない
+  （エージェントが介入しないため）
+- エージェント実行環境に鍵を置くことは禁止原則。やむを得ない場合は短期トークン化
+  を別途検討し、明示的な例外として記録する
+
 ## 5. 設計判断
 
 ### 結論: 「プロキシ注入」を主軸にする（Docker Sandboxes / agent-sandbox / Islo と同じ方式）
@@ -141,7 +160,10 @@ trustless の `run`（サブプロセス注入）は、エージェントと同�
    - 既存env注入キーは残す（プロキシは既存ヘッダーを上書きしない・共存可）
 8. **cronスクリプト移行** — 対象なし（r2-backup.shのrcloneはS3署名で注入不可・
    エージェント外実行なので現状維持が正解）
-9. **B群（プロセス注入必須）の棚卸し** — 未着手（turso/url・OAuth系・JSONトークン8キー）
+9. ~~B群（プロセス注入必須）の棚卸し~~ ✅ **完了**（2026-08-13）
+   - 結論: 全キーがエージェント外（cron/開発ツール）で使用 → コンセプトと矛盾なし
+   - 原則を文書化: エージェント実行環境に鍵を置くことは禁止。例外は短期トークン化
+   - tursoは実はHTTP APIなので将来プロキシ注入に移行可能（優先度低）
 
 ## 9. 参考（既存ソリューション）
 
