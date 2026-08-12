@@ -9,15 +9,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"regexp"
 	"strings"
 	"syscall"
 
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
 )
-
-var placeholderRE = regexp.MustCompile(`__([A-Z][A-Z0-9_]*)__`)
 
 type Proxy struct {
 	backend   backend.Backend
@@ -28,22 +25,7 @@ type Proxy struct {
 	ca        *CA
 }
 
-func (p *Proxy) replacePlaceholders(s string) string {
-	return placeholderRE.ReplaceAllStringFunc(s, func(match string) string {
-		key := match[2 : len(match)-2]
-		val, err := p.backend.Resolve(context.Background(), strings.ToLower(key))
-		if err != nil {
-			val2, err2 := p.backend.Resolve(context.Background(), "iria/api/"+strings.ToLower(key))
-			if err2 != nil {
-				return match
-			}
-			return val2
-		}
-		return val
-	})
-}
-
-// resolveKey resolves a credential key using the placeholder resolution rule:
+// resolveKey resolves a credential key using the standard resolution rule:
 // lowercase(key) -> pass key, fallback: iria/api/lowercase(key).
 func (p *Proxy) resolveKey(key string) (string, bool) {
 	val, err := p.backend.Resolve(context.Background(), strings.ToLower(key))
@@ -66,7 +48,7 @@ func hostOnly(host string) string {
 }
 
 // allowedHost checks the host against the allowlist. An empty allowlist
-// permits all hosts (backwards compatible). Otherwise only listed hosts pass.
+// permits all hosts (no egress restriction).
 func (p *Proxy) allowedHost(host string) bool {
 	if len(p.allowlist) == 0 {
 		return true
@@ -81,8 +63,9 @@ func (p *Proxy) allowedHost(host string) bool {
 }
 
 // injectByHost applies host-based credential injection rules. If the request
-// host matches a rule and the target header is absent, the resolved credential
-// is injected (prefix + value + suffix).
+// host matches a rule, the resolved credential is injected into the target
+// header or query parameter. Existing header values are never overwritten;
+// unresolved keys fail open (no injection).
 func (p *Proxy) injectByHost(r *http.Request) {
 	host := hostOnly(r.Host)
 	if host == "" {
@@ -92,36 +75,28 @@ func (p *Proxy) injectByHost(r *http.Request) {
 	if !ok {
 		return
 	}
-	if r.Header.Get(rule.Header) != "" {
-		return // header already set: leave it untouched
-	}
 	val, ok := p.resolveKey(rule.Key)
 	if !ok {
 		return // fail-open: unresolved key is not injected
 	}
-	r.Header.Set(rule.Header, rule.Prefix+val+rule.Suffix)
+
+	if rule.Header != "" {
+		if r.Header.Get(rule.Header) == "" {
+			r.Header.Set(rule.Header, rule.Prefix+val+rule.Suffix)
+		}
+		return
+	}
+	if rule.Query != "" {
+		q := r.URL.Query()
+		if q.Get(rule.Query) == "" {
+			q.Set(rule.Query, val)
+			r.URL.RawQuery = q.Encode()
+		}
+	}
 }
 
 func (p *Proxy) substituteRequest(r *http.Request) {
 	p.injectByHost(r)
-
-	r.URL.RawQuery = p.replacePlaceholders(r.URL.RawQuery)
-
-	for key, values := range r.Header {
-		for i, v := range values {
-			r.Header[key][i] = p.replacePlaceholders(v)
-		}
-	}
-
-	if r.Body != nil && r.Body != http.NoBody {
-		body, err := io.ReadAll(r.Body)
-		r.Body.Close()
-		if err == nil {
-			newBody := p.replacePlaceholders(string(body))
-			r.Body = io.NopCloser(strings.NewReader(newBody))
-			r.ContentLength = int64(len(newBody))
-		}
-	}
 }
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
@@ -248,22 +223,19 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: trustless proxy start [flags]")
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Start a local HTTP forward proxy that substitutes credential placeholders.")
-		fmt.Fprintln(os.Stderr, "Placeholders are resolved from the pass store in real-time.")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Placeholder format: __KEY_NAME__ (e.g. __GITHUB_TOKEN__, __XAI__)")
-		fmt.Fprintln(os.Stderr, "Resolution: lowercase(KEY_NAME) -> pass key, fallback: iria/api/lowercase(KEY_NAME)")
+		fmt.Fprintln(os.Stderr, "Start a local HTTP forward proxy that injects credentials into requests by host.")
+		fmt.Fprintln(os.Stderr, "Injection rules are defined in config [proxy.rules] (host -> {header|query, key}).")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Flags:")
 		fs.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Examples:")
 		fmt.Fprintln(os.Stderr, "  trustless proxy start --port 8080")
-		fmt.Fprintln(os.Stderr, "  HTTPS_PROXY=http://127.0.0.1:8080 curl -H \"Authorization: Bearer __XAI__\" https://api.x.ai/v1/models")
+		fmt.Fprintln(os.Stderr, "  HTTPS_PROXY=http://127.0.0.1:8080 curl https://api.x.ai/v1/models")
 	}
 	port := fs.Int("port", cfg.Proxy.Port, "listen port")
 	unixSocket := fs.String("unix-socket", "", "unix socket path")
-	mitm := fs.Bool("mitm", false, "Enable MITM mode (intercept HTTPS for placeholder substitution)")
+	mitm := fs.Bool("mitm", false, "Enable MITM mode (intercept HTTPS for credential injection)")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
@@ -302,17 +274,15 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: trustless proxy start [flags]")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Start a local HTTP forward proxy that substitutes credential placeholders.")
-	fmt.Fprintln(os.Stderr, "Placeholders are resolved from the pass store in real-time.")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Placeholder format: __KEY_NAME__ (e.g. __GITHUB_TOKEN__, __XAI__)")
-	fmt.Fprintln(os.Stderr, "Resolution: lowercase(KEY_NAME) -> pass key, fallback: iria/api/lowercase(KEY_NAME)")
+	fmt.Fprintln(os.Stderr, "Start a local HTTP forward proxy that injects credentials into requests by host.")
+	fmt.Fprintln(os.Stderr, "Injection rules are defined in config [proxy.rules] (host -> {header|query, key}).")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Flags:")
 	fmt.Fprintln(os.Stderr, "  --port <n>           Listen port (default: 8080)")
 	fmt.Fprintln(os.Stderr, "  --unix-socket <path>  Listen on Unix socket instead of TCP")
+	fmt.Fprintln(os.Stderr, "  --mitm                Enable MITM mode (intercept HTTPS for header injection)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Examples:")
 	fmt.Fprintln(os.Stderr, "  trustless proxy start --port 8080")
-	fmt.Fprintln(os.Stderr, "  HTTPS_PROXY=http://127.0.0.1:8080 curl -H \"Authorization: Bearer __XAI__\" https://api.x.ai/v1/models")
+	fmt.Fprintln(os.Stderr, "  HTTPS_PROXY=http://127.0.0.1:8080 curl https://api.x.ai/v1/models")
 }

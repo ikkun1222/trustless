@@ -77,23 +77,29 @@ trustless の `run`（サブプロセス注入）は、エージェントと同�
   ケースが多い → 脅威は低い
 - エージェント経由でどうしても必要な場合のみ、短期トークン化（STS等）を別途検討
 
-## 6. trustless proxy の現状評価と必要拡張
+## 6. trustless proxy の設計（2026-08-12 更新・後方互換なし方針）
 
-現状（internal/proxy/）:
-- `__KEY_NAME__` プレースホルダを ヘッダー/クエリ/ボディ で置換（MITMでHTTPSも可）
-- 解決: lowercase(KEY) → passキー、フォールバック iria/api/lowercase(KEY)
-- allowlist フィールドは定義のみ（未実装）
-- テストなし・実利用実績なし
+**実装済み（feature/trustless-proxy-hostrules）:**
+- `[proxy.rules]`: host → {header|query, key, prefix?, suffix?}
+  - header注入（Authorization / Ocp-Apim-Subscription-Key 等）
+  - query注入（e-Stat の appid、Alpha Vantage の apikey 等）
+  - 既存ヘッダー/パラメータは上書きしない・未解決キーはfail-open
+- `proxy.allowlist`: 設定時のみ許可ホスト限定、違反は403（HTTP/CONNECT/MITM全経路）
+- プレースホルダ方式（`__KEY__`）は**廃止**（デッドコード回避・後方互換なし方針）
+- テスト11件・実機E2E（header/query注入・403）検証済み
 
-必要拡張:
-1. **ホストベースの注入ルール**（どのホストにどのキーを注入するか）— 現在は
-   `__KEY__` プレースホルダ方式で、エージェントがプレースホルダを書く必要がある。
-   Docker Sandboxes / agent-sandbox は「ホスト名→キー」マッピングで、エージェントは
-   素のリクエストを送るだけでよい
-2. **allowlist 実装**（デフォルトdeny: 許可ホスト以外は遮断）
-3. **DLP-proxy との統合**（送信DLP + 認証注入を1経路に。dlp-proxy は7ルートで
-   LLM経路を保護中 → trustless proxy をその上流/下流に配置）
-4. **systemd 常駐化**（現状は手動起動）
+**dlp-proxy との連携（役割分担）:**
+
+| 経路 | 担当 | 役割 |
+|---|---|---|
+| LLM API（merge/openrouter/sakura/google/vercel等） | dlp-proxy (127.0.0.1:8787) | 送信DLP（リクエストボディのシークレットマスク） |
+| 一般API（EDINET/e-Stat/xai等） | trustless proxy (127.0.0.1:8080) | 認証注入（ホストベース） |
+
+- 両者とも secrets_source=bitwarden・systemd常駐で統一
+- trustless proxy はフォワードプロキシ（HTTPS_PROXY設定）、dlp-proxy はリバースプロキシ
+  （base_url差し替え）なので経路が重ならない
+- エージェント（Hermes/opencode）の設定: LLM系はdlp-proxy経由、それ以外のAPIは
+  HTTPS_PROXY=trustless経由で素のリクエストを送る
 
 ## 7. PoC実証結果（2026-08-12）
 
@@ -114,16 +120,17 @@ trustless の `run`（サブプロセス注入）は、エージェントと同�
 ## 8. 実装ステップ（承認後）
 
 1. ~~PoC~~ ✅ **完了**（上記 §7。プレースホルダ注入は現行実装で動作確認済み）
-2. **ホストベース注入ルール**の設計・実装 ✅ **完了**（2026-08-12, feature/trustless-proxy-hostrules）
-   - config `[proxy.rules]`: host → {header, key, prefix, suffix}
-   - 素のリクエストに自動注入（既存ヘッダーは上書きしない・未解決キーはfail-open）
-   - allowlist（デフォルト全許可・設定時のみ許可ホスト限定、違反は403）
-   - テスト9件追加（注入/上書き/ルール外/allowlist）・実機E2E検証済み
-3. ~~allowlist（デフォルトdeny）~~ ✅ **完了**（上記2に含む・実機403確認済み）
-4. テスト追加 ✅ **完了**（proxy回帰テスト9件・make check 70 passed）
-5. **systemd 常駐化 + エージェント環境（HTTPS_PROXY）への適用** — 未着手
-6. DLP-proxy 統合の検討 — 未着手
-7. 実運用: A群キーのエージェント利用を run → proxy に移行 — 未着手
+2. ~~ホストベース注入ルール~~ ✅ **完了**（2026-08-12, feature/trustless-proxy-hostrules）
+   - config `[proxy.rules]`: host → {header|query, key, prefix?, suffix?}
+   - 素のリクエストに自動注入（既存ヘッダー/パラメータは上書きしない・未解決キーはfail-open）
+   - allowlist（設定時のみ許可ホスト限定、違反は403）
+   - テスト11件追加・実機E2E（header/query注入・403）検証済み
+3. ~~allowlist~~ ✅ **完了**（上記2に含む・実機403確認済み）
+4. ~~テスト追加~~ ✅ **完了**（proxy回帰テスト11件・make check 72 passed）
+5. ~~プレースホルダ方式廃止~~ ✅ **完了**（ホストベース注入に一本化・デッドコード排除）
+6. **systemd 常駐化 + エージェント環境（HTTPS_PROXY）への適用** — 未着手
+7. **dlp-proxy との連携**（役割分担の運用化・LLM系はdlp/一般APIはtrustless） — 未着手
+8. 実運用: A群キーのエージェント利用を run → proxy に移行 — 未着手
 
 ## 9. 参考（既存ソリューション）
 

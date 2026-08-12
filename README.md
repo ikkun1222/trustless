@@ -156,7 +156,7 @@ trustless run -s GITHUB_TOKEN -s OPENAI_KEY -- gh pr list
 
 ### `trustless proxy` — HTTP Forward Proxy with Credential Injection
 
-Start a local HTTP forward proxy that substitutes `__KEY_NAME__` placeholders in requests with real credentials.
+Start a local HTTP forward proxy that injects credentials into requests based on the destination host. The agent sends plain requests — no placeholder syntax, no knowledge of the key.
 
 ```bash
 trustless proxy start --port 8080
@@ -169,21 +169,23 @@ Configure your agent to use the proxy:
 export HTTPS_PROXY=http://127.0.0.1:8080
 ```
 
-**Placeholder format:** `__<KEY_NAME>__` — double underscores surrounding an uppercase key name. Resolution tries the lowercase key as a pass entry first, then falls back to `iria/api/<lowercase_key>`.
-
-**Host-based injection rules (config `[proxy.rules]`):** inject a credential header automatically for requests to a specific host. The agent sends a plain request — no placeholder needed. The header is injected only if the target header is absent; unresolved keys fail open (no injection).
+**Injection rules (config `[proxy.rules]`):** map a host to a credential injected as a header or query parameter. The header/parameter is injected only when absent; unresolved keys fail open (no injection).
 
 ```toml
 [proxy.rules]
+# Header injection (e.g. LLM APIs, EDINET)
 "api.x.ai" = { header = "Authorization", key = "xai", prefix = "Bearer " }
 "api.edinet-fsa.go.jp" = { header = "Ocp-Apim-Subscription-Key", key = "edinet" }
+# Query parameter injection (e.g. e-Stat, Alpha Vantage)
+"statdb.nstac.go.jp" = { query = "appid", key = "estat" }
+"www.alphavantage.co" = { query = "apikey", key = "alphavantage/mcp-key" }
 ```
 
-- `header`: header name to inject
-- `key`: credential key (same resolution as placeholders: lowercase → pass, fallback `iria/api/<key>`)
-- `prefix` / `suffix`: value wrapping (e.g. `Bearer ` prefix)
+- `header` / `query`: injection target (exactly one per rule)
+- `key`: credential key (resolution: lowercase → pass, fallback `iria/api/<key>`)
+- `prefix` / `suffix`: header value wrapping (e.g. `Bearer ` prefix)
 
-**Egress allowlist (config `proxy.allowlist`):** when set, only listed hosts are permitted through the proxy; all other requests are rejected with `403 Forbidden`. Empty/absent = all hosts allowed (backwards compatible).
+**Egress allowlist (config `proxy.allowlist`):** when set, only listed hosts are permitted through the proxy; all other requests are rejected with `403 Forbidden`. Empty/absent = all hosts allowed.
 
 ```toml
 [proxy]
@@ -191,7 +193,7 @@ allowlist = ["api.x.ai", "api.edinet-fsa.go.jp"]
 ```
 
 **MITM mode (`--mitm`):**
-- Enables HTTPS interception for placeholder substitution in encrypted requests
+- Enables HTTPS interception for credential injection into encrypted requests
 - Auto-generates a root CA certificate at `~/.config/trustless/trustless-ca.{crt,key}` on first use
 - Leaf certificates are generated per-hostname (24h validity, ECDSA P-256)
 - Install the CA certificate system-wide for seamless HTTPS interception:
@@ -205,9 +207,9 @@ allowlist = ["api.x.ai", "api.edinet-fsa.go.jp"]
 |------|-------------|
 | `--port <n>` | Listen port (default: 8080) |
 | `--unix-socket <path>` | Listen on Unix socket (file permission control) |
-| `--mitm` | Enable MITM mode (intercept HTTPS for placeholder substitution) |
+| `--mitm` | Enable MITM mode (intercept HTTPS for credential injection) |
 
-HTTPS CONNECT tunneling is supported. Without `--mitm`, CONNECT requests pass through without modification. With `--mitm`, the connection is intercepted and placeholder substitution applies.
+HTTPS CONNECT tunneling is supported. Without `--mitm`, CONNECT requests pass through without modification. With `--mitm`, the connection is intercepted and host-based credential injection applies.
 
 ### `trustless setup` — First-Time Setup Wizard
 

@@ -29,7 +29,8 @@ func newTestProxy(rules map[string]config.ProxyRule, allowlist []string) *Proxy 
 		backend: &mockBackend{values: map[string]string{
 			"xai":        "sk-test-xai-12345",
 			"openrouter": "sk-or-v1-test",
-			"edinet":     "EDINET-KEY-000",
+			"edinet":     "ESTAT-APPID-999",
+			"estat":      "ESTAT-APPID-999",
 		}},
 		rules:     rules,
 		allowlist: allowlist,
@@ -86,8 +87,8 @@ func TestProxyホストベース注入はプレースホルダ互換のキー解
 	req := httptestNewRequest("GET", "https://api.edinet-fsa.go.jp/v2/documents.json")
 	p.substituteRequest(req)
 
-	if got := req.Header.Get("Ocp-Apim-Subscription-Key"); got != "EDINET-KEY-000" {
-		t.Fatalf("Ocp-Apim-Subscription-Key = %q, want EDINET-KEY-000", got)
+	if got := req.Header.Get("Ocp-Apim-Subscription-Key"); got != "ESTAT-APPID-999" {
+		t.Fatalf("Ocp-Apim-Subscription-Key = %q, want ESTAT-APPID-999", got)
 	}
 }
 
@@ -104,28 +105,59 @@ func TestProxyホストベース注入は未解決キーでfailOpen(t *testing.T
 	}
 }
 
-func TestProxyプレースホルダ置換は従来通り動作する(t *testing.T) {
+func TestProxyプレースホルダ方式は廃止されホストルールで解決する(t *testing.T) {
+	// 旧プレースホルダ（__KEY__）は解決されず、そのまま残る
 	p := newTestProxy(nil, nil)
 
 	req := httptestNewRequest("GET", "https://api.x.ai/v1/models?x=__XAI__")
 	req.Header.Set("Authorization", "Bearer __XAI__")
 	p.substituteRequest(req)
 
-	if got := req.Header.Get("Authorization"); got != "Bearer sk-test-xai-12345" {
-		t.Fatalf("Authorization = %q, want placeholder resolved", got)
+	if got := req.Header.Get("Authorization"); got != "Bearer __XAI__" {
+		t.Fatalf("Authorization = %q, want placeholder left untouched (host rules only)", got)
 	}
 }
 
-func TestProxyプレースホルダはサフィックス付きルールで置換される(t *testing.T) {
+func TestProxyクエリパラメータ注入(t *testing.T) {
 	p := newTestProxy(map[string]config.ProxyRule{
-		"api.example.com": {Header: "X-Api-Key", Key: "xai", Suffix: "|suffix"},
+		"statdb.nstac.go.jp": {Query: "appid", Key: "estat"},
 	}, nil)
 
-	req := httptestNewRequest("GET", "https://api.example.com/")
+	req := httptestNewRequest("GET", "https://statdb.nstac.go.jp/api/getStatsList")
 	p.substituteRequest(req)
 
-	if got := req.Header.Get("X-Api-Key"); got != "sk-test-xai-12345|suffix" {
-		t.Fatalf("X-Api-Key = %q, want value+suffix", got)
+	if got := req.URL.Query().Get("appid"); got != "ESTAT-APPID-999" {
+		t.Fatalf("query appid = %q, want ESTAT-APPID-999", got)
+	}
+}
+
+func TestProxyクエリ注入は既存パラメータを上書きしない(t *testing.T) {
+	p := newTestProxy(map[string]config.ProxyRule{
+		"statdb.nstac.go.jp": {Query: "appid", Key: "estat"},
+	}, nil)
+
+	req := httptestNewRequest("GET", "https://statdb.nstac.go.jp/api/getStatsList?appid=user-supplied")
+	p.substituteRequest(req)
+
+	if got := req.URL.Query().Get("appid"); got != "user-supplied" {
+		t.Fatalf("query appid = %q, want existing value untouched", got)
+	}
+}
+
+func TestProxyクエリ注入は他のパラメータを保持する(t *testing.T) {
+	p := newTestProxy(map[string]config.ProxyRule{
+		"statdb.nstac.go.jp": {Query: "appid", Key: "estat"},
+	}, nil)
+
+	req := httptestNewRequest("GET", "https://statdb.nstac.go.jp/api/getStatsList?lang=J&statsDataId=001")
+	p.substituteRequest(req)
+
+	q := req.URL.Query()
+	if got := q.Get("appid"); got != "ESTAT-APPID-999" {
+		t.Fatalf("query appid = %q, want ESTAT-APPID-999", got)
+	}
+	if got := q.Get("lang"); got != "J" {
+		t.Fatalf("query lang = %q, want J preserved", got)
 	}
 }
 
