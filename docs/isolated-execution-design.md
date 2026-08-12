@@ -124,13 +124,24 @@ trustless の `run`（サブプロセス注入）は、エージェントと同�
    - config `[proxy.rules]`: host → {header|query, key, prefix?, suffix?}
    - 素のリクエストに自動注入（既存ヘッダー/パラメータは上書きしない・未解決キーはfail-open）
    - allowlist（設定時のみ許可ホスト限定、違反は403）
-   - テスト11件追加・実機E2E（header/query注入・403）検証済み
+   - テスト13件追加・実機E2E（header/query注入・403）検証済み
 3. ~~allowlist~~ ✅ **完了**（上記2に含む・実機403確認済み）
-4. ~~テスト追加~~ ✅ **完了**（proxy回帰テスト11件・make check 72 passed）
+4. ~~テスト追加~~ ✅ **完了**（proxy回帰テスト13件・make check 全パス）
 5. ~~プレースホルダ方式廃止~~ ✅ **完了**（ホストベース注入に一本化・デッドコード排除）
-6. **systemd 常駐化 + エージェント環境（HTTPS_PROXY）への適用** — 未着手
-7. **dlp-proxy との連携**（役割分担の運用化・LLM系はdlp/一般APIはtrustless） — 未着手
-8. 実運用: A群キーのエージェント利用を run → proxy に移行 — 未着手
+6. **systemd 常駐化** ✅ **完了**（2026-08-13, user unit trustless-proxy.service）
+   - mise shimsをPATHに追加（bw/node解決）
+   - 実config.tomlに8ルール適用（EDINET/e-Stat/x.ai/openrouter/AlphaVantage/tavily/exa）
+   - MITM CAはシステムCAストアにインストール済み（2026-07-29）
+   - 実機E2E: tavilyで素のリクエスト→Authorization注入→実データ取得成功
+   - 修正: CONNECTルーティング404バグ（ServeMuxはCONNECTをホストでルーティング）・
+     MITM leaf証明書のSANにポートが混入するバグ
+7. **エージェント環境（HTTPS_PROXY）適用** — 設定済み・次回gateway再起動で有効
+   - trustless-gateway.sh に HTTPS_PROXY/HTTP_PROXY/NO_PROXY を追加
+   - NO_PROXY=127.0.0.1 でdlp-proxy（LLM経路）を除外（実測200確認）
+   - 既存env注入キーは残す（プロキシは既存ヘッダーを上書きしない・共存可）
+8. **cronスクリプト移行** — 対象なし（r2-backup.shのrcloneはS3署名で注入不可・
+   エージェント外実行なので現状維持が正解）
+9. **B群（プロセス注入必須）の棚卸し** — 未着手（turso/url・OAuth系・JSONトークン8キー）
 
 ## 9. 参考（既存ソリューション）
 
