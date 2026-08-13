@@ -164,16 +164,16 @@ func pollOnce(ctx context.Context, client *http.Client, provider Provider, devic
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("oauth: token endpoint returned %s", resp.Status)
-	}
 	var tr tokenResponse
 	if err := json.Unmarshal(body, &tr); err != nil {
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("oauth: token endpoint returned %s", resp.Status)
+		}
 		return nil, fmt.Errorf("oauth: parse token response: %w", err)
 	}
-	if provider.TokenRequestStyle == tokenStyleJSON && tr.Code != 0 {
-		return nil, larkCodeError(&tr)
-	}
+	// エラーコードは HTTP ステータスに関わらず body の error フィールドで判定する。
+	// Lark は pending 状態を 400 + {"error":"authorization_pending"} で返す
+	// （実測 2026-08-13・httptest モックが 200 で返すためテストでは拾えなかった）。
 	switch tr.Error {
 	case "authorization_pending":
 		return nil, nil
@@ -184,10 +184,16 @@ func pollOnce(ctx context.Context, client *http.Client, provider Provider, devic
 	case "expired_token", "invalid_grant":
 		return nil, tokenError(&tr)
 	}
+	if provider.TokenRequestStyle == tokenStyleJSON && tr.Code != 0 {
+		return nil, larkCodeError(&tr)
+	}
 	if tr.Error != "" {
 		return nil, tokenError(&tr)
 	}
 	if tr.AccessToken == "" {
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("oauth: token endpoint returned %s", resp.Status)
+		}
 		return nil, fmt.Errorf("oauth: token response without access_token")
 	}
 	return &DeviceFlowTokenData{

@@ -176,6 +176,52 @@ func TestDevicePollはformでdeviceCodeを送って成功時にトークンを�
 	}
 }
 
+func TestDevicePollはLark式の400pending応答でも再試行して成功する(t *testing.T) {
+	// 実測（2026-08-13）: Lark は pending 状態を 400 + {"error":"authorization_pending"} で返す。
+	// ステータスコードを無視してボディの error フィールドで判定すること。
+	waits := fakeDeviceWait(t)
+	var polls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls++
+		if polls == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"code":0,"error":"authorization_pending"}`)
+			return
+		}
+		fmt.Fprint(w, `{"code":0,"access_token":"access-1","expires_in":3600,"refresh_token":"refresh-1"}`)
+	}))
+	t.Cleanup(srv.Close)
+	p := Provider{TokenURL: srv.URL, ClientID: "client-1", ClientSecret: "secret-1", TokenRequestStyle: "json"}
+	data, err := DevicePoll(context.Background(), http.DefaultClient, p, "dc-1", 0, 0)
+	if err != nil {
+		t.Fatalf("DevicePoll() error = %v, want nil (400 pending は継続)", err)
+	}
+	if polls != 2 {
+		t.Errorf("polls = %d, want 2", polls)
+	}
+	if data.AccessToken != "access-1" || data.RefreshToken != "refresh-1" {
+		t.Errorf("token = %+v, want access-1/refresh-1", data)
+	}
+	if len(*waits) != 2 {
+		t.Errorf("waits = %v, want 2 waits", *waits)
+	}
+}
+
+func TestDevicePollはLark式の400expired応答でエラーを返す(t *testing.T) {
+	waits := fakeDeviceWait(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"code":10004,"error":"expired_token"}`)
+	}))
+	t.Cleanup(srv.Close)
+	p := Provider{TokenURL: srv.URL, ClientID: "client-1", ClientSecret: "secret-1", TokenRequestStyle: "json"}
+	_, err := DevicePoll(context.Background(), http.DefaultClient, p, "dc-1", 0, 0)
+	if err == nil {
+		t.Fatal("DevicePoll() error = nil, want non-nil (expired_token)")
+	}
+	_ = waits
+}
+
 func TestDevicePollはpendingから承認まで再試行して成功する(t *testing.T) {
 	waits := fakeDeviceWait(t)
 	var polls int
