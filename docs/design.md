@@ -42,8 +42,8 @@ trustless:    agent → says "use GITHUB_TOKEN" → broker resolves → agent ge
 │  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐  │
 │  │ secret   │  │ run      │  │ proxy                │  │
 │  │ (list/   │  │ (subproc │  │ (HTTP forward proxy  │  │
-│  │  get/set)│  │  inject) │  │  with placeholder    │  │
-│  └────┬─────┘  └────┬─────┘  │  substitution)       │  │
+│  │  get/set)│  │  inject) │  │  host-based inject)  │  │
+│  └────┬─────┘  └────┬─────┘  └──────────┬───────────┘  │
 │       │             │        └──────────┬───────────┘  │
 │       │             │                   │              │
 │  ┌────┴─────────────┴───────────────────┴──────────┐   │
@@ -121,7 +121,7 @@ trustless run -s GITHUB_TOKEN -s OPENAI_KEY -- gh pr list
 
 ### `trustless proxy` — HTTP Forward Proxy with Credential Injection
 
-Start a local HTTP forward proxy that substitutes placeholders in requests with real credentials.
+Start a local HTTP forward proxy that injects credentials into requests based on the destination host.
 
 ```bash
 trustless proxy start --port 8080
@@ -133,11 +133,17 @@ export HTTPS_PROXY=http://127.0.0.1:8080
 ```
 
 **Request flow:**
-1. Agent makes request: `curl -H "Authorization: Bearer ***" https://api.github.com/repos/owner/repo`
-2. Proxy intercepts, substitutes `__GITHUB_TOKEN__` with resolved value
-3. Forwards to GitHub, returns response to agent
+1. Agent makes a plain request: `curl https://api.x.ai/v1/models`
+2. Proxy matches the host against `[proxy.rules]` and injects the credential (header or query parameter)
+3. Forwards to the API, returns response to agent
 
-**Placeholder format:** `__<KEY_NAME>__` (double underscore + uppercase key name + double underscore)
+**Injection rules (config `[proxy.rules]`):** host → `{header|query, key, prefix?, suffix?}`. Key resolution: lowercase → pass, fallback `iria/api/<key>`. Existing header/parameter values are never overwritten; unresolved keys fail open.
+
+```toml
+[proxy.rules]
+"api.x.ai" = { header = "Authorization", key = "xai", prefix = "Bearer " }
+"statdb.nstac.go.jp" = { query = "appid", key = "estat" }
+```
 
 **Options:**
 
@@ -328,8 +334,8 @@ Implements:
 Implements:
 - `trustless proxy start` subcommand
 - Local HTTP forward proxy using `httputil.ReverseProxy`
-- Placeholder substitution: `__KEY_NAME__` in request headers/body gets replaced with resolved credential
-- Domain allowlisting (from config)
+- Host-based credential injection: `[proxy.rules]` maps host → {header|query, key}
+- Egress allowlisting (from config)
 - Unix socket support (`--unix-socket <path>`)
 - `--port` flag (default: 8080)
 - Graceful shutdown on SIGINT/SIGTERM
@@ -401,13 +407,12 @@ Implements:
 ### Phase 4: `trustless proxy` — HTTP Forward Proxy
 
 - `internal/proxy/` package
-- `httputil.ReverseProxy`-based forward proxy
-- Placeholder substitution (`__KEY_NAME__`)
-- Domain allowlisting
+- Forward proxy with host-based credential injection (`[proxy.rules]`: header/query)
+- Egress allowlisting
 - Unix socket support
 - Graceful shutdown
 
-**Deliverable:** Agent can `export HTTPS_PROXY=http://127.0.0.1:8080` and use placeholders transparently.
+**Deliverable:** Agent can `export HTTPS_PROXY=http://127.0.0.1:8080` and send plain requests; credentials are injected by host-based rules transparently.
 
 ### Phase 5: Completion + Integration
 

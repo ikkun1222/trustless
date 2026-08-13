@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"regexp"
 	"strings"
 	"syscall"
 
@@ -17,52 +16,94 @@ import (
 	"github.com/ikkun1222/trustless/internal/config"
 )
 
-var placeholderRE = regexp.MustCompile(`__([A-Z][A-Z0-9_]*)__`)
-
 type Proxy struct {
 	backend   backend.Backend
 	port      int
 	unixPath  string
+	rules     map[string]config.ProxyRule
 	allowlist []string
 	ca        *CA
 }
 
-func (p *Proxy) replacePlaceholders(s string) string {
-	return placeholderRE.ReplaceAllStringFunc(s, func(match string) string {
-		key := match[2 : len(match)-2]
-		val, err := p.backend.Resolve(context.Background(), strings.ToLower(key))
-		if err != nil {
-			val2, err2 := p.backend.Resolve(context.Background(), "iria/api/"+strings.ToLower(key))
-			if err2 != nil {
-				return match
-			}
-			return val2
+// resolveKey resolves a credential key using the standard resolution rule:
+// lowercase(key) -> pass key, fallback: iria/api/lowercase(key).
+func (p *Proxy) resolveKey(key string) (string, bool) {
+	val, err := p.backend.Resolve(context.Background(), strings.ToLower(key))
+	if err == nil {
+		return val, true
+	}
+	val2, err2 := p.backend.Resolve(context.Background(), "iria/api/"+strings.ToLower(key))
+	if err2 != nil {
+		return "", false
+	}
+	return val2, true
+}
+
+// hostOnly strips the port from a host:port string.
+func hostOnly(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
+}
+
+// allowedHost checks the host against the allowlist. An empty allowlist
+// permits all hosts (no egress restriction).
+func (p *Proxy) allowedHost(host string) bool {
+	if len(p.allowlist) == 0 {
+		return true
+	}
+	h := hostOnly(host)
+	for _, a := range p.allowlist {
+		if a == h {
+			return true
 		}
-		return val
-	})
+	}
+	return false
+}
+
+// injectByHost applies host-based credential injection rules. If the request
+// host matches a rule, the resolved credential is injected into the target
+// header or query parameter. Existing header values are never overwritten;
+// unresolved keys fail open (no injection).
+func (p *Proxy) injectByHost(r *http.Request) {
+	host := hostOnly(r.Host)
+	if host == "" {
+		host = hostOnly(r.URL.Host)
+	}
+	rule, ok := p.rules[host]
+	if !ok {
+		return
+	}
+	val, ok := p.resolveKey(rule.Key)
+	if !ok {
+		return // fail-open: unresolved key is not injected
+	}
+
+	if rule.Header != "" {
+		if r.Header.Get(rule.Header) == "" {
+			r.Header.Set(rule.Header, rule.Prefix+val+rule.Suffix)
+		}
+		return
+	}
+	if rule.Query != "" {
+		q := r.URL.Query()
+		if q.Get(rule.Query) == "" {
+			q.Set(rule.Query, val)
+			r.URL.RawQuery = q.Encode()
+		}
+	}
 }
 
 func (p *Proxy) substituteRequest(r *http.Request) {
-	r.URL.RawQuery = p.replacePlaceholders(r.URL.RawQuery)
-
-	for key, values := range r.Header {
-		for i, v := range values {
-			r.Header[key][i] = p.replacePlaceholders(v)
-		}
-	}
-
-	if r.Body != nil && r.Body != http.NoBody {
-		body, err := io.ReadAll(r.Body)
-		r.Body.Close()
-		if err == nil {
-			newBody := p.replacePlaceholders(string(body))
-			r.Body = io.NopCloser(strings.NewReader(newBody))
-			r.ContentLength = int64(len(newBody))
-		}
-	}
+	p.injectByHost(r)
 }
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	if !p.allowedHost(r.Host) {
+		http.Error(w, "host not allowed by proxy allowlist", http.StatusForbidden)
+		return
+	}
 	outReq, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -89,6 +130,10 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
+	if !p.allowedHost(r.Host) {
+		http.Error(w, "host not allowed by proxy allowlist", http.StatusForbidden)
+		return
+	}
 	targetConn, err := net.Dial("tcp", r.Host)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -120,25 +165,14 @@ func (p *Proxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) Start(ctx context.Context) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodConnect {
-			if p.ca != nil {
-				p.mitmHandleCONNECT(w, r, p.ca)
-			} else {
-				p.handleCONNECT(w, r)
-			}
-			return
-		}
-		p.handleHTTP(w, r)
-	})
+	handler := p.handler()
 
 	listener, err := p.listen()
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Handler: handler}
 
 	go func() {
 		<-ctx.Done()
@@ -149,6 +183,27 @@ func (p *Proxy) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// handler returns the top-level http.Handler. Go's ServeMux routes CONNECT
+// requests by host, not path, so a "/" pattern never matches them (404).
+// CONNECT is therefore handled explicitly before delegating to the mux.
+func (p *Proxy) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		p.handleHTTP(w, r)
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			if p.ca != nil {
+				p.mitmHandleCONNECT(w, r, p.ca)
+			} else {
+				p.handleCONNECT(w, r)
+			}
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (p *Proxy) listen() (net.Listener, error) {
@@ -178,31 +233,30 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: trustless proxy start [flags]")
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Start a local HTTP forward proxy that substitutes credential placeholders.")
-		fmt.Fprintln(os.Stderr, "Placeholders are resolved from the pass store in real-time.")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Placeholder format: __KEY_NAME__ (e.g. __GITHUB_TOKEN__, __XAI__)")
-		fmt.Fprintln(os.Stderr, "Resolution: lowercase(KEY_NAME) -> pass key, fallback: iria/api/lowercase(KEY_NAME)")
+		fmt.Fprintln(os.Stderr, "Start a local HTTP forward proxy that injects credentials into requests by host.")
+		fmt.Fprintln(os.Stderr, "Injection rules are defined in config [proxy.rules] (host -> {header|query, key}).")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Flags:")
 		fs.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Examples:")
 		fmt.Fprintln(os.Stderr, "  trustless proxy start --port 8080")
-		fmt.Fprintln(os.Stderr, "  HTTPS_PROXY=http://127.0.0.1:8080 curl -H \"Authorization: Bearer __XAI__\" https://api.x.ai/v1/models")
+		fmt.Fprintln(os.Stderr, "  HTTPS_PROXY=http://127.0.0.1:8080 curl https://api.x.ai/v1/models")
 	}
 	port := fs.Int("port", cfg.Proxy.Port, "listen port")
 	unixSocket := fs.String("unix-socket", "", "unix socket path")
-	mitm := fs.Bool("mitm", false, "Enable MITM mode (intercept HTTPS for placeholder substitution)")
+	mitm := fs.Bool("mitm", false, "Enable MITM mode (intercept HTTPS for credential injection)")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
 
 	p := &Proxy{
-		backend:  be,
-		port:     *port,
-		unixPath: *unixSocket,
+		backend:   be,
+		port:      *port,
+		unixPath:  *unixSocket,
+		rules:     cfg.Proxy.Rules,
+		allowlist: cfg.Proxy.Allowlist,
 	}
 
 	if *mitm {
@@ -230,17 +284,15 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: trustless proxy start [flags]")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Start a local HTTP forward proxy that substitutes credential placeholders.")
-	fmt.Fprintln(os.Stderr, "Placeholders are resolved from the pass store in real-time.")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Placeholder format: __KEY_NAME__ (e.g. __GITHUB_TOKEN__, __XAI__)")
-	fmt.Fprintln(os.Stderr, "Resolution: lowercase(KEY_NAME) -> pass key, fallback: iria/api/lowercase(KEY_NAME)")
+	fmt.Fprintln(os.Stderr, "Start a local HTTP forward proxy that injects credentials into requests by host.")
+	fmt.Fprintln(os.Stderr, "Injection rules are defined in config [proxy.rules] (host -> {header|query, key}).")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Flags:")
 	fmt.Fprintln(os.Stderr, "  --port <n>           Listen port (default: 8080)")
 	fmt.Fprintln(os.Stderr, "  --unix-socket <path>  Listen on Unix socket instead of TCP")
+	fmt.Fprintln(os.Stderr, "  --mitm                Enable MITM mode (intercept HTTPS for header injection)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Examples:")
 	fmt.Fprintln(os.Stderr, "  trustless proxy start --port 8080")
-	fmt.Fprintln(os.Stderr, "  HTTPS_PROXY=http://127.0.0.1:8080 curl -H \"Authorization: Bearer __XAI__\" https://api.x.ai/v1/models")
+	fmt.Fprintln(os.Stderr, "  HTTPS_PROXY=http://127.0.0.1:8080 curl https://api.x.ai/v1/models")
 }

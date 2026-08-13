@@ -24,7 +24,20 @@ type RunDefaults struct {
 }
 
 type ProxyConfig struct {
-	Port int `toml:"port"`
+	Port      int                  `toml:"port"`
+	Rules     map[string]ProxyRule `toml:"rules"`
+	Allowlist []string             `toml:"allowlist"`
+}
+
+// ProxyRule injects a credential into requests for a specific host.
+// Key resolution: lowercase(key) -> pass key, fallback: iria/api/lowercase(key).
+// Either Header or Query must be set (both empty is an error).
+type ProxyRule struct {
+	Header string `toml:"header"` // header name to inject (e.g. "Authorization")
+	Query  string `toml:"query"`  // query parameter name to inject (e.g. "appid")
+	Key    string `toml:"key"`    // credential key (e.g. "xai" or "iria/api/xai")
+	Prefix string `toml:"prefix"` // header value prefix (e.g. "Bearer ")
+	Suffix string `toml:"suffix"` // header value suffix
 }
 
 type SanitizeConfig struct {
