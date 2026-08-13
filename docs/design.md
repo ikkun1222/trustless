@@ -115,6 +115,11 @@ Lark は refresh token を **7 日で失効**させる（`refresh_token_expires_
 - Google は `device_auth_style = "body"`（form ボディに `client_secret`）、Lark は `"basic"`（`Authorization: Basic` ヘッダ）で資格情報を送る
 - token リクエストは Google が `form`（`application/x-www-form-urlencoded`）、Lark が `json`（`application/json` ボディ + `code` フィールドで成功/失敗判定）
 
+### 既知の制約（実測 2026-08-13）
+
+- **Bitwarden バックエンドは暗号化値の上限 5000 文字**。Lark の access/refresh token は JWT で各 5.7KB 級のため**エントリを格納できない**（`The field Value exceeds the maximum encrypted value length of 5000 characters`）。Google は収まる。→ **Lark の OAuth エントリは `backend = "pass"` で運用する**（pass は上限なし）。実機検証済み（Google: bitwarden / Lark: pass）
+- エントリの時刻フィールド（`expires_at` / `refresh_expires_at`）は空文字をゼロ値として許容する（旧形式・手動編集エントリ対策）
+
 ## Command Reference
 
 ### `trustless secret` — Credential Store Operations

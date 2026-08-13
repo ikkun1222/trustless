@@ -193,8 +193,8 @@ func status(args []string, be backend.Backend) int {
 					"key":                key,
 					"provider":           entry.Provider,
 					"scopes":             entry.Scopes,
-					"expires_at":         entry.ExpiresAt,
-					"refresh_expires_at": entry.RefreshExpiresAt,
+					"expires_at":         formatTime(entry.ExpiresAt),
+					"refresh_expires_at": formatTime(entry.RefreshExpiresAt),
 					"status":             "reauth_required",
 				})
 				return 0
@@ -207,8 +207,8 @@ func status(args []string, be backend.Backend) int {
 		"key":                key,
 		"provider":           entry.Provider,
 		"scopes":             entry.Scopes,
-		"expires_at":         entry.ExpiresAt,
-		"refresh_expires_at": entry.RefreshExpiresAt,
+		"expires_at":         formatTime(entry.ExpiresAt),
+		"refresh_expires_at": formatTime(entry.RefreshExpiresAt),
 		"status":             "valid",
 	})
 	return 0
