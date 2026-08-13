@@ -31,6 +31,10 @@ This machine uses [trustless](https://github.com/ikkun1222/trustless) CLI for cr
 - **All output is automatically sanitized.** Credential patterns in stdout/stderr are REDACTED by default.
 - **Command arguments are scanned for credentials** (`--scan-args` is on by default). If detected, execution is blocked.
 
+## OAuth Credentials
+
+Some credentials are OAuth entries (stored as `type=oauth` JSON). They resolve like any other key via `trustless run -s <key>`, and trustless auto-refreshes the access token when it expires. If resolution fails with a reauth error (refresh token revoked), re-authenticate with `trustless oauth login <provider> <key>` — or run `trustless oauth refresh <key>` to force a refresh ahead of expiry. Check state with `trustless oauth status <key>` and list configured providers with `trustless oauth providers`.
+
 ## Running Commands with Credentials
 
 To run a command with credential injection:
