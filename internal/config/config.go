@@ -17,6 +17,15 @@ type Config struct {
 	Sanitize    SanitizeConfig `toml:"sanitize"`
 	Policy      PolicyConfig   `toml:"policy"`
 	OAuth       OAuthConfig    `toml:"oauth"`
+	Audit       AuditConfig    `toml:"audit"`
+}
+
+// AuditConfig holds structured audit log settings. Sink: "journald" | "file" | "off" | "".
+// Empty Sink means the caller applies its default (serve → journald, others → file).
+type AuditConfig struct {
+	Sink   string `toml:"sink"`
+	File   string `toml:"file"`
+	Buffer int    `toml:"buffer"`
 }
 
 // OAuthConfig holds OAuth provider definitions. The TOML field names match
