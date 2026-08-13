@@ -80,6 +80,8 @@ func (b *OAuthBackend) Resolve(ctx context.Context, key string) (string, error) 
 		return cached, nil
 	}
 	// 失効（またはキャッシュなし）→ 自動 refresh。
+	// 最小化エントリ（Access 非永続）は ExpiresAt がゼロ値のため
+	// 常に失効扱いとなり、RefreshIfNeeded が必ず refresh する。
 	// 失敗時は自動リトライせず、そのままエラーを返す。
 	orig := entry
 	did, err := RefreshIfNeeded(ctx, b.client, provider, &entry, cacheSkew)

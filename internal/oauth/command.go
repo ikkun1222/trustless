@@ -99,19 +99,18 @@ func login(args []string, be backend.Backend, cfg *config.Config) int {
 		errf("%v", err)
 		return exitError
 	}
+	// 最小化エントリで保存する: access / scopes / expires_at はランタイム専用
+	// であり永続化しない（access は resolve 時に refresh で取得）。
+	// Refreshable=false のプロバイダ（v1 では発生しない）のみ access も保存する。
 	entry := &OAuthEntry{
 		Provider: providerName,
-		Access:   data.AccessToken,
 		Refresh:  data.RefreshToken,
 	}
-	if data.ExpiresIn > 0 {
-		entry.ExpiresAt = time.Now().Add(time.Duration(data.ExpiresIn) * time.Second)
+	if !provider.Refreshable {
+		entry.Access = data.AccessToken
 	}
 	if data.RefreshExpiresIn > 0 {
 		entry.RefreshExpiresAt = time.Now().Add(time.Duration(data.RefreshExpiresIn) * time.Second)
-	}
-	if data.Scope != "" {
-		entry.Scopes = stringsFields(data.Scope)
 	}
 	// pass の 1 行制約を満たす compact 単一行 JSON で保存する。
 	entryJSON, err := json.Marshal(entry)
@@ -185,8 +184,9 @@ func status(args []string, be backend.Backend) int {
 		errf("oauth: credential %q is not an OAuth entry", key)
 		return exitError
 	}
-	if !entry.ExpiresAt.IsZero() && time.Now().After(entry.ExpiresAt) {
-		// 失効済み → refresh を試みる。失敗時は再認証が必要と報告する。
+	// access が空（最小化エントリ・非永続）か失効済みなら refresh を試みる。
+	// 失敗時は再認証が必要と報告する。
+	if entry.Access == "" || (!entry.ExpiresAt.IsZero() && time.Now().After(entry.ExpiresAt)) {
 		if _, err := ob.ForceRefresh(context.Background(), key); err != nil {
 			if errors.Is(err, ErrReauthRequired) || errors.Is(err, ErrInvalidGrant) {
 				writeJSON(map[string]any{
@@ -266,21 +266,4 @@ func writeJSON(v any) {
 		errf("%v", err)
 		os.Exit(exitError)
 	}
-}
-
-// stringsFields はスコープ文字列を空白区切りで分割する。
-func stringsFields(s string) []string {
-	var out []string
-	start := -1
-	for i := 0; i <= len(s); i++ {
-		if i == len(s) || s[i] == ' ' || s[i] == '\t' || s[i] == '\n' {
-			if start >= 0 {
-				out = append(out, s[start:i])
-				start = -1
-			}
-		} else if start < 0 {
-			start = i
-		}
-	}
-	return out
 }

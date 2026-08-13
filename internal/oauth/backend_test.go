@@ -81,11 +81,41 @@ func (ts *countingTokenServer) handler() http.Handler {
 }
 
 // marshalEntry は OAuthEntry を単一行 JSON に変換する。
+// 最小化 Marshal のため access 等のランタイム専用フィールドは落ちる。
 func marshalEntry(t *testing.T, e *OAuthEntry) string {
 	t.Helper()
 	b, err := json.Marshal(e)
 	if err != nil {
 		t.Fatalf("marshal entry: %v", err)
+	}
+	return string(b)
+}
+
+// legacyEntryJSON は旧形式（access/scopes 入り・access 永続）のエントリ JSON を
+// 直接組み立てる。既存 bitwarden エントリ互換の検証や Refreshable=false 系の
+// テストで使う。
+func legacyEntryJSON(t *testing.T, e *OAuthEntry) string {
+	t.Helper()
+	wire := struct {
+		Type             string   `json:"type"`
+		Provider         string   `json:"provider"`
+		Access           string   `json:"access"`
+		Refresh          string   `json:"refresh"`
+		ExpiresAt        string   `json:"expires_at"`
+		RefreshExpiresAt string   `json:"refresh_expires_at"`
+		Scopes           []string `json:"scopes"`
+	}{
+		Type:             "oauth",
+		Provider:         e.Provider,
+		Access:           e.Access,
+		Refresh:          e.Refresh,
+		ExpiresAt:        formatTime(e.ExpiresAt),
+		RefreshExpiresAt: formatTime(e.RefreshExpiresAt),
+		Scopes:           e.Scopes,
+	}
+	b, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatalf("marshal legacy entry: %v", err)
 	}
 	return string(b)
 }
@@ -182,8 +212,9 @@ func TestBackendのResolveはrefresh成功後にエントリを書き戻す(t *t
 	if updated.Refresh != "refresh-2" {
 		t.Errorf("stored Refresh = %q, want rotated %q", updated.Refresh, "refresh-2")
 	}
-	if updated.Access != "access-new" {
-		t.Errorf("stored Access = %q, want %q", updated.Access, "access-new")
+	// 書き戻しは最小化形式のため access は永続化されない
+	if updated.Access != "" {
+		t.Errorf("stored Access = %q, want empty (minimized entry)", updated.Access)
 	}
 }
 
@@ -270,8 +301,9 @@ func TestBackendのResolveはRefreshableがfalseならキャッシュもHTTPも�
 		providers["static-provider"] = p
 	}
 	bb := NewBackend(mb, providers).(*OAuthBackend)
+	// Refreshable=false は access を永続化する契約のため、旧形式エントリを保存する
 	entry := &OAuthEntry{Provider: "static-provider", Access: "access-static", Refresh: "refresh-1", ExpiresAt: time.Now().Add(-1 * time.Minute)}
-	mb.putRaw("oauth-key", marshalEntry(t, entry))
+	mb.putRaw("oauth-key", legacyEntryJSON(t, entry))
 	got, err := bb.Resolve(context.Background(), "oauth-key")
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
@@ -302,6 +334,85 @@ func TestBackendのValuesはOAuthキーのfreshアクセスと静的キーを含
 	}
 	if got[1] != "static-secret" {
 		t.Errorf("Values()[1] = %q, want static secret", got[1])
+	}
+}
+
+// TestBackendのResolveはaccess空エントリでもrefreshして新しいトークンを返す:
+// 最小化エントリ（access 非永続）では Access=="" のためキャッシュを見ずに
+// 必ず refresh する。疑似サーバのカウンタで refresh 実行を確認する。
+func TestBackendのResolveはaccess空エントリでもrefreshして新しいトークンを返す(t *testing.T) {
+	ts := &countingTokenServer{body: `{"access_token":"access-new","expires_in":3600}`}
+	b, mb := newOAuthBackend(t, ts)
+	// 最小化エントリ: access / expires_at を持たない
+	entry := &OAuthEntry{Provider: "google", Refresh: "refresh-1"}
+	mb.putRaw("oauth-key", marshalEntry(t, entry))
+	got, err := b.Resolve(context.Background(), "oauth-key")
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got != "access-new" {
+		t.Errorf("Resolve() = %q, want %q", got, "access-new")
+	}
+	if ts.calls.Load() != 1 {
+		t.Errorf("token server calls = %d, want 1", ts.calls.Load())
+	}
+	// キャッシュに access が乗り、2 回目は HTTP 呼び出しなし
+	got2, err := b.Resolve(context.Background(), "oauth-key")
+	if err != nil {
+		t.Fatalf("Resolve() #2 error = %v", err)
+	}
+	if got2 != "access-new" {
+		t.Errorf("Resolve() #2 = %q, want %q", got2, "access-new")
+	}
+	if ts.calls.Load() != 1 {
+		t.Errorf("token server calls after cache = %d, want still 1", ts.calls.Load())
+	}
+}
+
+// TestBackendのResolveはキャッシュ済みならaccess空エントリでもHTTP呼び出ししない:
+// 一度 refresh してキャッシュに access が載った後、エントリが最小化形式で
+// 書き戻されても（Access 非永続）、キャッシュが有効な間は refresh しない。
+func TestBackendのResolveはキャッシュ済みならaccess空エントリでもHTTP呼び出ししない(t *testing.T) {
+	ts := &countingTokenServer{body: `{"access_token":"access-1","expires_in":3600}`}
+	b, mb := newOAuthBackend(t, ts)
+	entry := &OAuthEntry{Provider: "google", Refresh: "refresh-1"}
+	mb.putRaw("oauth-key", marshalEntry(t, entry))
+	if _, err := b.Resolve(context.Background(), "oauth-key"); err != nil {
+		t.Fatalf("Resolve() warmup error = %v", err)
+	}
+	if ts.calls.Load() != 1 {
+		t.Fatalf("token server calls after warmup = %d, want 1", ts.calls.Load())
+	}
+	// 最小化形式で書き戻した後も、キャッシュが有効なら HTTP 呼び出しが増えない
+	mb.putRaw("oauth-key", marshalEntry(t, &OAuthEntry{Provider: "google", Refresh: "refresh-1"}))
+	got, err := b.Resolve(context.Background(), "oauth-key")
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got != "access-1" {
+		t.Errorf("Resolve() = %q, want %q", got, "access-1")
+	}
+	if ts.calls.Load() != 1 {
+		t.Errorf("token server calls = %d, want still 1", ts.calls.Load())
+	}
+}
+
+// TestBackendのResolveはゼロExpiresAtエントリでもrefreshする:
+// RefreshIfNeeded は ExpiresAt がゼロ値（非永続）を常に失効扱いにする。
+func TestBackendのResolveはゼロExpiresAtエントリでもrefreshする(t *testing.T) {
+	ts := &countingTokenServer{body: `{"access_token":"access-new","expires_in":3600}`}
+	b, mb := newOAuthBackend(t, ts)
+	entry := &OAuthEntry{Provider: "google", Refresh: "refresh-1"}
+	mb.putRaw("oauth-key", marshalEntry(t, entry))
+	got, err := b.Resolve(context.Background(), "oauth-key")
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got != "access-new" {
+		t.Errorf("Resolve() = %q, want %q", got, "access-new")
+	}
+	if ts.calls.Load() != 1 {
+		t.Errorf("token server calls = %d, want 1 (zero ExpiresAt must refresh)", ts.calls.Load())
 	}
 }
 

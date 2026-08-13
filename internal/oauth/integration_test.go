@@ -281,12 +281,23 @@ func TestOAuth統合のloginは疑似deviceフローでエントリを保存す�
 	}
 	// google（form/body）で login 相当の device flow を実行
 	stored := deviceFlowLogin(t, ms, mb, ms.provider("google", "form", "body", "a", "b"), "api/google")
-	// 保存されたエントリ: compact 1 行 JSON・type=oauth
-	if stored.Provider != "google" || stored.Access != "access-1" || stored.Refresh != "refresh-1" {
-		t.Errorf("stored = %+v, want google/access-1/refresh-1", stored)
+	// 保存されたエントリ: compact 1 行 JSON・type=oauth・最小化（access/scopes 非永続）
+	if stored.Provider != "google" || stored.Refresh != "refresh-1" {
+		t.Errorf("stored = %+v, want google/refresh-1", stored)
 	}
-	if len(stored.Scopes) != 2 || stored.Scopes[0] != "a" {
-		t.Errorf("stored Scopes = %v, want [a b]", stored.Scopes)
+	if stored.Access != "" {
+		t.Errorf("stored Access = %q, want empty (minimized entry)", stored.Access)
+	}
+	if len(stored.Scopes) != 0 {
+		t.Errorf("stored Scopes = %v, want empty (scopes not persisted)", stored.Scopes)
+	}
+	// 保存 JSON にも access / scopes が含まれない
+	raw := mustGet(t, mb, "api/google")
+	if strings.Contains(raw, "access-1") {
+		t.Errorf("stored raw contains access token: %q", raw)
+	}
+	if strings.Contains(raw, `"scopes"`) {
+		t.Errorf("stored raw contains scopes: %q", raw)
 	}
 	// DeviceStart の body スタイル: Authorization ヘッダを使わない
 	if len(ms.device.auths) != 1 {
@@ -300,7 +311,7 @@ func TestOAuth統合のloginは疑似deviceフローでエントリを保存す�
 func TestOAuth統合のResolveは未失効ならキャッシュから返しサーバカウンタが増えない(t *testing.T) {
 	ms := newMockServer(t)
 	mb := newMemBackendE2E()
-	// login 相当で保存された失効済みエントリ（Refreshable=true の google）
+	// 失効済みエントリ（Refreshable=true の google）: 1 回目で refresh させる
 	raw, err := json.Marshal(&oauth.OAuthEntry{
 		Provider:  "google",
 		Access:    "access-old",
@@ -311,10 +322,11 @@ func TestOAuth統合のResolveは未失効ならキャッシュから返しサ�
 		t.Fatalf("marshal entry: %v", err)
 	}
 	mb.m["api/google"] = string(raw)
+	ob := oauth.NewBackend(mb, ms.providerMap()).(*oauth.OAuthBackend)
 
 	// 1 回目の Resolve: 失効済み → refresh で access-new を取得
 	ms.token.resp = []string{`{"access_token":"access-new","expires_in":3600}`}
-	got, err := resolve(t, mb, ms.providerMap(), "api/google")
+	got, err := ob.Resolve(context.Background(), "api/google")
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -325,8 +337,8 @@ func TestOAuth統合のResolveは未失効ならキャッシュから返しサ�
 		t.Errorf("token calls = %d, want 1", ms.token.count.n.Load())
 	}
 
-	// 2 回目の Resolve: 未失効 → キャッシュから返り、疑似サーバのカウンタが増えない
-	got, err = resolve(t, mb, ms.providerMap(), "api/google")
+	// 2 回目の Resolve: キャッシュから返り、疑似サーバのカウンタが増えない
+	got, err = ob.Resolve(context.Background(), "api/google")
 	if err != nil {
 		t.Fatalf("Resolve() #2 error = %v", err)
 	}
@@ -363,10 +375,10 @@ func TestOAuth統合のResolveは失効したら自動refreshし新トークン�
 	if ms.token.count.n.Load() != 1 {
 		t.Errorf("token calls = %d, want 1", ms.token.count.n.Load())
 	}
-	// エントリ書き戻し: access が新しい値になっている
+	// エントリ書き戻し: 最小化形式のため access は永続化されない
 	stored := entryJSON(t, mustGet(t, mb, "api/google"))
-	if stored.Access != "access-new" {
-		t.Errorf("stored Access = %q, want access-new", stored.Access)
+	if stored.Access != "" {
+		t.Errorf("stored Access = %q, want empty (minimized write-back)", stored.Access)
 	}
 	// refresh リクエストは form スタイルで client_secret をボディに含む
 	if len(ms.token.params) != 1 {
@@ -434,9 +446,10 @@ func TestOAuth統合のrefreshTokenローテーション後もResolveがCASで�
 		t.Fatalf("marshal entry: %v", err)
 	}
 	mb.m["api/lark"] = string(raw)
+	ob := oauth.NewBackend(mb, ms.providerMap()).(*oauth.OAuthBackend)
 	// 1 回目の refresh: refresh-1 → refresh-2（ローテーション）
 	ms.token.resp = []string{`{"code":0,"access_token":"access-1","refresh_token":"refresh-2","expires_in":7200}`}
-	if _, err := resolve(t, mb, ms.providerMap(), "api/lark"); err != nil {
+	if _, err := ob.Resolve(context.Background(), "api/lark"); err != nil {
 		t.Fatalf("Resolve() #1 error = %v", err)
 	}
 	if got := mustGet(t, mb, "api/lark"); !strings.Contains(got, "refresh-2") {
@@ -444,7 +457,7 @@ func TestOAuth統合のrefreshTokenローテーション後もResolveがCASで�
 	}
 	// 2 回目: refresh はキャッシュから返るためトークンサーバの呼び出しが増えない
 	ms.token.resp = []string{`{"code":0,"access_token":"access-2","refresh_token":"refresh-3","expires_in":7200}`}
-	got, err := resolve(t, mb, ms.providerMap(), "api/lark")
+	got, err := ob.Resolve(context.Background(), "api/lark")
 	if err != nil {
 		t.Fatalf("Resolve() #2 error = %v", err)
 	}
@@ -459,8 +472,8 @@ func TestOAuth統合のrefreshTokenローテーション後もResolveがCASで�
 	if stored.Refresh != "refresh-2" {
 		t.Errorf("stored Refresh = %q, want refresh-2 (CAS guard must not overwrite)", stored.Refresh)
 	}
-	if stored.Access != "access-1" {
-		t.Errorf("stored Access = %q, want access-1 (CAS guard keeps first write)", stored.Access)
+	if stored.Access != "" {
+		t.Errorf("stored Access = %q, want empty (minimized write-back)", stored.Access)
 	}
 }
 
@@ -500,8 +513,8 @@ func TestOAuth統合のrefreshTokenローテーションは連鎖してもCASで
 	if stored.Refresh != "refresh-3" {
 		t.Errorf("stored Refresh = %q, want refresh-3 (rotation chain via CAS)", stored.Refresh)
 	}
-	if stored.Access != "access-2" {
-		t.Errorf("stored Access = %q, want access-2", stored.Access)
+	if stored.Access != "" {
+		t.Errorf("stored Access = %q, want empty (minimized write-back)", stored.Access)
 	}
 }
 
@@ -538,6 +551,108 @@ func TestOAuth統合のinvalidGrantはErrInvalidGrantを返し再認証が必要
 	}
 	if !entry.ExpiresAt.Before(time.Now()) {
 		t.Errorf("entry ExpiresAt = %v, want expired (reauth required)", entry.ExpiresAt)
+	}
+}
+
+// TestOAuth統合の最小化エントリは保存されResolveがrefresh1回でaccessを返す:
+// login 相当で保存したエントリが最小化形式（access 非永続）であること、
+// Resolve が refresh を 1 回だけ行い access を返し、2 回目はキャッシュから
+// 返ることを疑似プロバイダのカウンタで検証する。
+func TestOAuth統合の最小化エントリは保存されResolveがrefresh1回でaccessを返す(t *testing.T) {
+	ms := newMockServer(t)
+	mb := newMemBackendE2E()
+	ms.token.resp = []string{
+		`{"access_token":"access-1","refresh_token":"refresh-1","expires_in":3600,"refresh_token_expires_in":604800,"scope":"a b"}`,
+	}
+	// login 相当の device flow（最小化保存は backend.Set 前の Marshal で行われる）
+	stored := deviceFlowLogin(t, ms, mb, ms.provider("google", "form", "body", "a", "b"), "api/google")
+	if stored.Provider != "google" || stored.Refresh != "refresh-1" {
+		t.Errorf("stored = %+v, want google/refresh-1", stored)
+	}
+	// 保存 JSON は最小化: access / expires_at / scopes を含まない
+	raw := mustGet(t, mb, "api/google")
+	if strings.Contains(raw, "access-1") {
+		t.Errorf("stored raw contains access token: %q", raw)
+	}
+	if strings.Contains(raw, `"expires_at"`) {
+		t.Errorf("stored raw contains expires_at: %q", raw)
+	}
+	if strings.Contains(raw, `"scopes"`) {
+		t.Errorf("stored raw contains scopes: %q", raw)
+	}
+	// 以降の refresh 応答（access 空エントリの 1 回目 + キャッシュ検証用）
+	ms.token.resp = []string{`{"access_token":"access-new","expires_in":3600}`}
+	ob := oauth.NewBackend(mb, ms.providerMap()).(*oauth.OAuthBackend)
+	// login の poll で token を 1 回消費済みのため、Resolve 前のカウントから差分を検証する
+	before := ms.token.count.n.Load()
+
+	got, err := ob.Resolve(context.Background(), "api/google")
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got != "access-new" {
+		t.Errorf("Resolve() = %q, want %q", got, "access-new")
+	}
+	if calls := ms.token.count.n.Load() - before; calls != 1 {
+		t.Errorf("token calls during Resolve = %d, want 1", calls)
+	}
+	// 2 回目はキャッシュから返り HTTP 呼び出しが増えない
+	got, err = ob.Resolve(context.Background(), "api/google")
+	if err != nil {
+		t.Fatalf("Resolve() #2 error = %v", err)
+	}
+	if got != "access-new" {
+		t.Errorf("Resolve() #2 = %q, want %q", got, "access-new")
+	}
+	if calls := ms.token.count.n.Load() - before; calls != 1 {
+		t.Errorf("token calls after cached resolve = %d, want still 1", calls)
+	}
+}
+
+// TestOAuth統合の圧縮経路は3500バイト超エントリでもloginからrefreshまで通る:
+// 5000 文字級のダミー refresh token を持つエントリを保存し、
+// zlib 圧縮（z ラップ）を経て Resolve の refresh が動作することを検証する。
+func TestOAuth統合の圧縮経路は3500バイト超エントリでもloginからrefreshまで通る(t *testing.T) {
+	ms := newMockServer(t)
+	mb := newMemBackendE2E()
+	bigRefresh := strings.Repeat("R", 5000)
+	ms.token.resp = []string{
+		// login 相当の device flow: 5000 文字級の refresh token を返す
+		`{"access_token":"access-1","refresh_token":"` + bigRefresh + `","expires_in":3600}`,
+		// 圧縮エントリからの refresh 応答
+		`{"access_token":"access-new","expires_in":3600}`,
+	}
+	stored := deviceFlowLogin(t, ms, mb, ms.provider("google", "form", "body", "a", "b"), "api/big")
+	if stored.Refresh != bigRefresh {
+		t.Fatalf("stored Refresh mismatch (len=%d want %d)", len(stored.Refresh), len(bigRefresh))
+	}
+	raw := mustGet(t, mb, "api/big")
+	if len(raw) > 5000 {
+		t.Errorf("stored raw length = %d, want <= 5000 (bitwarden limit)", len(raw))
+	}
+	// z ラップの圧縮エントリになっている
+	var probe struct {
+		Z bool `json:"z"`
+	}
+	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+		t.Fatalf("unmarshal z-probe: %v", err)
+	}
+	if !probe.Z {
+		t.Errorf("stored raw = %q..., want z-wrapped compressed entry", raw[:min(len(raw), 120)])
+	}
+	// 圧縮エントリからでも Resolve → refresh が通る
+	ob := oauth.NewBackend(mb, ms.providerMap()).(*oauth.OAuthBackend)
+	// login の poll で token を 1 回消費済みのため、Resolve 前のカウントから差分を検証する
+	before := ms.token.count.n.Load()
+	got, err := ob.Resolve(context.Background(), "api/big")
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got != "access-new" {
+		t.Errorf("Resolve() = %q, want %q", got, "access-new")
+	}
+	if calls := ms.token.count.n.Load() - before; calls != 1 {
+		t.Errorf("token calls during Resolve = %d, want 1", calls)
 	}
 }
 

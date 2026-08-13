@@ -138,6 +138,34 @@ func cmdEntry(t *testing.T, e *OAuthEntry) string {
 	return string(b)
 }
 
+// legacyCmdEntry は旧形式（access/scopes 入り）のエントリ JSON を組み立てる。
+// access 永続を前提とする既存 bitwarden エントリの互換検証に使う。
+func legacyCmdEntry(t *testing.T, e *OAuthEntry) string {
+	t.Helper()
+	wire := struct {
+		Type             string   `json:"type"`
+		Provider         string   `json:"provider"`
+		Access           string   `json:"access"`
+		Refresh          string   `json:"refresh"`
+		ExpiresAt        string   `json:"expires_at"`
+		RefreshExpiresAt string   `json:"refresh_expires_at"`
+		Scopes           []string `json:"scopes"`
+	}{
+		Type:             "oauth",
+		Provider:         e.Provider,
+		Access:           e.Access,
+		Refresh:          e.Refresh,
+		ExpiresAt:        formatTime(e.ExpiresAt),
+		RefreshExpiresAt: formatTime(e.RefreshExpiresAt),
+		Scopes:           e.Scopes,
+	}
+	b, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatalf("marshal legacy entry: %v", err)
+	}
+	return string(b)
+}
+
 // captureOutput は Run の戻り値と stdout をまとめて返す。
 func runCmd(t *testing.T, args []string, be backend.Backend, cfg *config.Config) (int, string) {
 	t.Helper()
@@ -176,8 +204,12 @@ func TestCommandのloginは疑似deviceフローでエントリを保存しJSON�
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		t.Fatalf("unmarshal stored entry: %v", err)
 	}
-	if stored.Provider != "google" || stored.Access != "access-1" || stored.Refresh != "refresh-1" {
-		t.Errorf("stored entry = %+v, want provider=google access=access-1 refresh=refresh-1", stored)
+	if stored.Provider != "google" || stored.Refresh != "refresh-1" {
+		t.Errorf("stored entry = %+v, want provider=google refresh=refresh-1", stored)
+	}
+	// 最小化保存: access は永続化されない
+	if stored.Access != "" {
+		t.Errorf("stored entry = %+v, want minimized (no access)", stored)
 	}
 	if !strings.Contains(out, `"key":"key-1"`) || !strings.Contains(out, `"provider":"google"`) {
 		t.Errorf("stdout = %q, want key/provider fields", out)
@@ -222,14 +254,15 @@ func TestCommandのrefreshはForceRefreshで新トークンを保存し出力に
 	if err := json.Unmarshal([]byte(mb.getRaw("key-1")), &stored); err != nil {
 		t.Fatalf("unmarshal stored entry: %v", err)
 	}
-	if stored.Access != "access-2" || stored.Refresh != "refresh-2" {
-		t.Errorf("stored = %+v, want refreshed access-2/refresh-2", stored)
+	if stored.Access != "" || stored.Refresh != "refresh-2" {
+		t.Errorf("stored = %+v, want minimized refresh-2 (access not persisted)", stored)
 	}
 }
 
 func TestCommandのstatusは未失効エントリをvalidと判定する(t *testing.T) {
 	mb := newCmdMemBackend()
-	mb.putRaw("key-1", cmdEntry(t, &OAuthEntry{Provider: "google", Access: "access-1", Refresh: "refresh-1", ExpiresAt: time.Now().Add(10 * time.Minute), Scopes: []string{"a", "b"}}))
+	// 旧形式エントリ（access 永続 + 未失効）: access があるため refresh 不要
+	mb.putRaw("key-1", legacyCmdEntry(t, &OAuthEntry{Provider: "google", Access: "access-1", Refresh: "refresh-1", ExpiresAt: time.Now().Add(10 * time.Minute), Scopes: []string{"a", "b"}}))
 	code, out := runCmd(t, []string{"status", "key-1"}, NewBackend(mb, ProvidersFromConfig(&config.Config{})), &config.Config{})
 	if code != 0 {
 		t.Fatalf("status exit code = %d, want 0", code)
@@ -264,13 +297,65 @@ func TestCommandのstatusは失効エントリをrefreshしてvalidと判定す�
 	if strings.Contains(out, "access-2") || strings.Contains(out, "refresh-2") {
 		t.Errorf("stdout = %q, must not contain token values", out)
 	}
-	// refresh 成功で新しい access/refresh token が保存されている
+	// refresh 成功で新しい refresh token が保存される（access は非永続）
 	var stored OAuthEntry
 	if err := json.Unmarshal([]byte(mb.getRaw("key-1")), &stored); err != nil {
 		t.Fatalf("unmarshal stored entry: %v", err)
 	}
-	if stored.Access != "access-2" || stored.Refresh != "refresh-2" {
-		t.Errorf("stored = %+v, want refreshed access-2/refresh-2", stored)
+	if stored.Access != "" || stored.Refresh != "refresh-2" {
+		t.Errorf("stored = %+v, want minimized refresh-2 (access not persisted)", stored)
+	}
+}
+
+func TestCommandのloginは保存エントリが最小化JSONでaccessを含まない(t *testing.T) {
+	code, out, mb := runLogin(t, `{"access_token":"access-1","refresh_token":"refresh-1","expires_in":3600,"scope":"a b"}`)
+	if code != 0 {
+		t.Fatalf("login exit code = %d, want 0 (stdout: %s)", code, out)
+	}
+	raw := mb.getRaw("key-1")
+	if raw == "" {
+		t.Fatal("stored entry is empty")
+	}
+	if strings.Contains(raw, "access-1") {
+		t.Errorf("stored entry contains access token: %q", raw)
+	}
+	if strings.Contains(raw, "a b") || strings.Contains(raw, `"scopes"`) {
+		t.Errorf("stored entry contains scopes: %q", raw)
+	}
+	if strings.Contains(raw, `"expires_at"`) {
+		t.Errorf("stored entry contains expires_at: %q", raw)
+	}
+	var stored OAuthEntry
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatalf("unmarshal stored entry: %v", err)
+	}
+	if stored.Provider != "google" || stored.Refresh != "refresh-1" {
+		t.Errorf("stored = %+v, want provider=google refresh=refresh-1", stored)
+	}
+}
+
+// TestCommandのstatusはaccess空かつ未失効でもrefreshしてvalidを返す:
+// 最小化エントリ（Access 非永続）では access が空のため、ExpiresAt が
+// 未失効でも ForceRefresh を試行して status=valid になる。
+func TestCommandのstatusはaccess空かつ未失効でもrefreshしてvalidを返す(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"access_token":"access-2","refresh_token":"refresh-2","expires_in":3600}`)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := cmdConfig(srv)
+	mb := newCmdMemBackend()
+	// 最小化エントリ: access / expires_at を持たない（ゼロ値 = 失効扱い）
+	mb.putRaw("key-1", cmdEntry(t, &OAuthEntry{Provider: "google", Refresh: "refresh-1"}))
+	ob := NewBackend(mb, ProvidersFromConfig(cfg)).(*OAuthBackend)
+	code, out := runCmd(t, []string{"status", "key-1"}, ob, cfg)
+	if code != 0 {
+		t.Fatalf("status exit code = %d, want 0 (stdout: %s)", code, out)
+	}
+	if !strings.Contains(out, `"status":"valid"`) {
+		t.Errorf("stdout = %q, want status valid", out)
+	}
+	if strings.Contains(out, "access-2") || strings.Contains(out, "refresh-2") {
+		t.Errorf("stdout = %q, must not contain token values", out)
 	}
 }
 
