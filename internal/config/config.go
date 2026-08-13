@@ -130,7 +130,34 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	warnPermissivePerm(path, cfg)
+
 	return cfg, nil
+}
+
+// warnPermissivePerm warns when the config contains an OAuth client_secret
+// but the file is readable by group/other. Save writes 0600, but hand-edited
+// files can be looser; the warning catches that at load time.
+func warnPermissivePerm(path string, cfg *Config) {
+	hasSecret := false
+	for _, p := range cfg.OAuth.Providers {
+		if p.ClientSecret != "" {
+			hasSecret = true
+			break
+		}
+	}
+	if !hasSecret {
+		return
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if mode := fi.Mode().Perm(); mode&0o077 != 0 {
+		fmt.Fprintf(os.Stderr,
+			"warning: %s has mode %04o; OAuth client_secret を含むため chmod 600 を推奨します\n",
+			path, mode)
+	}
 }
 
 // Save writes the config to the given path.
