@@ -79,7 +79,9 @@ func dispatch(cmd string, args []string, be backend.Backend, cfg *config.Config,
 	case "proxy":
 		proxy.Run(args, be, cfg)
 	case "oauth":
-		oauth.Run(args, oauth.NewBackend(be, oauth.ProvidersFromConfig(cfg)), cfg)
+		// oauth.Run は return int 方式（他のコマンドは os.Exit 内部呼び出し）。
+		// exit code を伝播させるため os.Exit で受ける。
+		os.Exit(oauth.Run(args, oauth.NewBackend(be, oauth.ProvidersFromConfig(cfg)), cfg))
 	case "config":
 		runConfig(args, cfg, cfgPath)
 	case "version":

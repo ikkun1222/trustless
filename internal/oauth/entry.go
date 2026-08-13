@@ -22,13 +22,31 @@ type OAuthEntry struct {
 }
 
 type oauthEntryWire struct {
-	Type             string    `json:"type"`
-	Provider         string    `json:"provider"`
-	Access           string    `json:"access"`
-	Refresh          string    `json:"refresh"`
-	ExpiresAt        time.Time `json:"expires_at"`
-	RefreshExpiresAt time.Time `json:"refresh_expires_at"`
-	Scopes           []string  `json:"scopes"`
+	Type             string   `json:"type"`
+	Provider         string   `json:"provider"`
+	Access           string   `json:"access"`
+	Refresh          string   `json:"refresh"`
+	ExpiresAt        string   `json:"expires_at"`
+	RefreshExpiresAt string   `json:"refresh_expires_at"`
+	Scopes           []string `json:"scopes"`
+}
+
+// parseTime は空文字をゼロ値として許容する time パース。
+// pass エントリの手動編集や旧形式エントリで空欄があり得るため、
+// 空文字でエラーにしない（実測: refresh_expires_at="" で全体が失敗した）。
+func parseTime(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339Nano, s)
+}
+
+// formatTime はゼロ値を空文字として出力する（parseTime との往復保証）。
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339Nano)
 }
 
 // MarshalJSON は pass の 1 行制約を満たすため、改行を含まない
@@ -39,8 +57,8 @@ func (e *OAuthEntry) MarshalJSON() ([]byte, error) {
 		Provider:         e.Provider,
 		Access:           e.Access,
 		Refresh:          e.Refresh,
-		ExpiresAt:        e.ExpiresAt,
-		RefreshExpiresAt: e.RefreshExpiresAt,
+		ExpiresAt:        formatTime(e.ExpiresAt),
+		RefreshExpiresAt: formatTime(e.RefreshExpiresAt),
 		Scopes:           e.Scopes,
 	}
 	b, err := json.Marshal(wire)
@@ -55,6 +73,7 @@ func (e *OAuthEntry) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON は type フィールドを検証し、"oauth" 以外はエラーを返す。
+// 時刻フィールドは空文字をゼロ値として許容する。
 func (e *OAuthEntry) UnmarshalJSON(data []byte) error {
 	var wire oauthEntryWire
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -63,12 +82,20 @@ func (e *OAuthEntry) UnmarshalJSON(data []byte) error {
 	if wire.Type != TypeOAuth {
 		return fmt.Errorf("oauth: entry type %q is not %q", wire.Type, TypeOAuth)
 	}
+	expiresAt, err := parseTime(wire.ExpiresAt)
+	if err != nil {
+		return fmt.Errorf("oauth: invalid expires_at: %w", err)
+	}
+	refreshExpiresAt, err := parseTime(wire.RefreshExpiresAt)
+	if err != nil {
+		return fmt.Errorf("oauth: invalid refresh_expires_at: %w", err)
+	}
 	*e = OAuthEntry{
 		Provider:         wire.Provider,
 		Access:           wire.Access,
 		Refresh:          wire.Refresh,
-		ExpiresAt:        wire.ExpiresAt,
-		RefreshExpiresAt: wire.RefreshExpiresAt,
+		ExpiresAt:        expiresAt,
+		RefreshExpiresAt: refreshExpiresAt,
 		Scopes:           wire.Scopes,
 	}
 	return nil

@@ -49,6 +49,31 @@ func TestOAuthEntryUnmarshalはtypeがoauth以外ならエラーを返す(t *tes
 	}
 }
 
+func TestOAuthEntryUnmarshalは空の時刻フィールドをゼロ値として許容する(t *testing.T) {
+	// 実測バグ（2026-08-13）: refresh_expires_at="" で time.Time の
+	// UnmarshalJSON がエラーになり、oauth status/refresh が全体失敗した。
+	var e OAuthEntry
+	err := json.Unmarshal([]byte(`{"type":"oauth","provider":"google","access":"a","refresh":"r","expires_at":"","refresh_expires_at":""}`), &e)
+	if err != nil {
+		t.Fatalf("Unmarshal() error = %v, want nil", err)
+	}
+	if !e.ExpiresAt.IsZero() || !e.RefreshExpiresAt.IsZero() {
+		t.Errorf("time fields = %v/%v, want zero values", e.ExpiresAt, e.RefreshExpiresAt)
+	}
+}
+
+func TestOAuthEntryMarshalはゼロ時刻を空文字で出力する(t *testing.T) {
+	e := OAuthEntry{Provider: "google", Access: "a", Refresh: "r"}
+	// production は常に *OAuthEntry で Marshal する（command.go の json.Marshal(entry)）。
+	b, err := json.Marshal(&e)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if got := string(b); !strings.Contains(got, `"expires_at":""`) || !strings.Contains(got, `"refresh_expires_at":""`) {
+		t.Errorf("Marshal() = %s, want empty time fields", got)
+	}
+}
+
 func TestIsOAuthEntryはtypeoauthのJSONのみtrueを返す(t *testing.T) {
 	cases := []struct {
 		data string
