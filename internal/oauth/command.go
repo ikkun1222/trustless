@@ -125,7 +125,7 @@ func login(args []string, be backend.Backend, cfg *config.Config) int {
 	writeJSON(map[string]any{
 		"key":        key,
 		"provider":   providerName,
-		"expires_at": entry.ExpiresAt,
+		"expires_at": formatTime(entry.ExpiresAt),
 	})
 	return 0
 }
