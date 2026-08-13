@@ -74,6 +74,55 @@ type Backend interface {
 
 Initial backend: `pass` — wraps `pass show <key>`, reads first line as secret value.
 
+## OAuth
+
+OAuth 資格情報（Google / Lark など）を backend に保存し、`backend.Backend` のデコレータとして access token を解決する。
+
+### エントリ型（`internal/oauth/entry.go`）
+
+OAuth エントリは pass の 1 行制約を満たすため **compact 単一行 JSON** で保存する。`type` フィールドが固定値 `oauth` で、通常の静的エントリ（プレーンテキスト値）と区別する。
+
+```json
+{"type":"oauth","provider":"google","access":"...","refresh":"...","expires_at":"...","refresh_expires_at":"...","scopes":["..."]}
+```
+
+- `IsOAuthEntry` が JSON かつ `type=="oauth"` のときだけ OAuth エントリと判定する（型検出は backend デコレータが行う）
+- `MarshalJSON` / `UnmarshalJSON` で `type` の付与と検証を一元化する
+
+### デコレータ（`internal/oauth/backend.go`）
+
+`NewBackend(inner, providers)` は `backend.Backend` をラップする `*OAuthBackend` を返す。
+
+- **素通し**：`Resolve` は OAuth エントリでなければ内側の値をそのまま返す（静的エントリ混在）
+- **OAuth 解決**：OAuth エントリなら access token を返す。`Refreshable` が false のプロバイダはキャッシュも HTTP も使わず保存済み access を返す
+- **キャッシュ**：未失効の access token はインメモリキャッシュ（`map[key]cacheEntry`）から返し、HTTP refresh を避ける。有効期限は `expires_at` の **60 秒手前**（`cacheSkew`）で切る。`ExpiresAt` がゼロ（応答に `expires_in` が無い）のエントリはキャッシュを使わない
+- **自動 refresh**：失効済みなら `Refresh`（refresh grant）で更新してから返す。`invalid_grant` は自動リトライせず `ErrInvalidGrant`（`ErrReauthRequired` でラップ）を返す
+- **CAS ガード**：refresh 成功時のエントリ書き戻しは、読み直した現在値の `refresh` token が refresh 実行前の値と一致する場合のみ行う。他プロセスが先に書き換えていた場合は上書きしない（二重 refresh 競合の解決）。書き戻しは最良努力で、失敗しても呼び出し元の返却値・キャッシュには影響しない
+- **List / Set / Values**：`Set` は書き換え後に該当キーのキャッシュを破棄し、`Values` は各キーを OAuth 処理込みで解決した fresh な値を返す（dedup + 昇順ソート）
+
+### refresh_token のローテーションと失効（Lark）
+
+Lark は refresh token を **7 日で失効**させる（`refresh_token_expires_in` = 604800）。このため:
+
+- `login` 時に `refresh_expires_at` を保存し、`status` コマンドが残り有効期間を報告できるようにする
+- refresh grant の応答に新しい `refresh_token` が含まれる場合は **ローテーション**し、CAS ガード付きで書き戻す。これにより失効 7 日以内に一度でも refresh されれば連続利用できる
+- `invalid_grant`（refresh token 失効）は自動リトライせず、`trustless oauth login` での再認証が必要
+
+### device code フロー（RFC 8628）
+
+`DeviceStart`（認可開始）→ ユーザーに認可 URL を提示 → `DevicePoll`（`authorization_pending` は待機継続、`slow_down` は interval +5s 上限 60s）→ トークン取得、を `trustless oauth login` が実行する。
+
+- Google は `device_auth_style = "body"`（form ボディに `client_secret`）、Lark は `"basic"`（`Authorization: Basic` ヘッダ）で資格情報を送る
+- token リクエストは Google が `form`（`application/x-www-form-urlencoded`）、Lark が `json`（`application/json` ボディ + `code` フィールドで成功/失敗判定）
+
+### 既知の制約（実測 2026-08-13）
+
+- **Bitwarden バックエンドは暗号化値の上限 5000 文字**。Lark の access/refresh token は JWT で各 5.7KB 級のため素のエントリは格納不可（`The field Value exceeds the maximum encrypted value length of 5000 characters`）。
+  → **エントリ最小化 + zlib 圧縮で解消**: access/scopes/expires_at は永続化しない（ランタイム専用・resolve 時に refresh で取得）・永続フィールドが閾値 3500B 超なら zlib+base64 の `{"type":"oauth","z":true,"data":...}` にラップ。実測: Lark エントリ 3595B で bitwarden に格納成功・Google は非圧縮のまま収まる
+- エントリの時刻フィールド（`expires_at` / `refresh_expires_at`）は空文字をゼロ値として許容する（旧形式・手動編集エントリ対策）
+- **Lark の refresh token は single-use**（`invalid_grant: ... can only be used once`）: refresh ごとにローテーションされ旧トークンは即無効化。CAS ガード（書き戻し時の refresh 値比較）が二重 refresh 競合で古い値を残さないことを保証する。消費済みトークンは `oauth status` が `reauth_required` を返し、`oauth login` で再認可が必要
+- **OAuth 統合は run / proxy / serve がデコレータ経由**（main.go の dispatch・serve の backend 構築で `oauth.NewBackend` を適用）。`secret get` は生エントリ（圧縮ラップ含む）を返すため、OAuth エントリの確認は `oauth status` / `oauth refresh` を使う
+
 ## Command Reference
 
 ### `trustless secret` — Credential Store Operations

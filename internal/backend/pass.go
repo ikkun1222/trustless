@@ -92,8 +92,11 @@ func (p *PassBackend) Values(ctx context.Context, minLen int) ([]string, error) 
 
 // Set stores a secret in pass, replacing any existing value. The value is fed
 // via stdin so it never appears on argv (ps / shell history leak).
+// -m (multiline) が必須: 単一行モードの `pass insert` はパイプ入力だと
+// 「再入力プロンプト」が EOF で失敗する（実測 2026-08-13）。-m なら
+// stdin 全体を値として保存し、Resolve の先頭行読みとセマンティクスは不変。
 func (p *PassBackend) Set(ctx context.Context, key, value string) error {
-	cmd := exec.CommandContext(ctx, "pass", "insert", "--force", key)
+	cmd := exec.CommandContext(ctx, "pass", "insert", "--force", "-m", key)
 	cmd.Stdin = strings.NewReader(value + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

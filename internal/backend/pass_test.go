@@ -89,9 +89,9 @@ func TestPassBackendSetはpassinsertを呼び値をstdinで渡す(t *testing.T) 
 	}
 
 	args := readFakePassArgs(t, logFile)
-	if len(args) != 3 ||
-		args[0] != "insert" || args[1] != "--force" || args[2] != "iria/api/test-key" {
-		t.Fatalf("pass args = %q, want [insert --force iria/api/test-key]", args)
+	if len(args) != 4 ||
+		args[0] != "insert" || args[1] != "--force" || args[2] != "-m" || args[3] != "iria/api/test-key" {
+		t.Fatalf("pass args = %q, want [insert --force -m iria/api/test-key]", args)
 	}
 
 	stdin, err := os.ReadFile(stdinFile)

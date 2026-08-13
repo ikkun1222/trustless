@@ -120,6 +120,58 @@ Validation: `make validate-plugin` (or `make check`) verifies the manifest again
 {"key": "github_token", "value": "ghp_..."}
 ```
 
+### `trustless oauth` — OAuth Credential Management
+
+Manage OAuth credentials (RFC 8628 device flow + refresh grant) for providers like Google and Lark. `trustless oauth login` runs the device authorization flow and stores the resulting tokens as a **compact single-line JSON entry** (`type=oauth`) in the credential backend. The entry is then resolved like any other credential — `trustless run -s <key>` / `trustless proxy` return a fresh access token, with automatic refresh on expiry.
+
+| Subcommand | Description | Example |
+|------------|-------------|---------|
+| `login <provider> <key>` | Device flow login; stores the OAuth entry | `trustless oauth login google api/google` |
+| `refresh <key>` | Force refresh the OAuth entry (ignore cache) | `trustless oauth refresh api/google` |
+| `status <key>` | Show entry status (`valid` / `expired` / `reauth_required`) | `trustless oauth status api/google` |
+| `providers` | List configured providers | `trustless oauth providers` |
+
+`login` prints the verification URL to stdout, then polls until the user approves:
+
+```bash
+$ trustless oauth login google api/google
+https://oauth2.googleapis.com/device/code?user_code=ABCD-1234   # open this in a browser
+{"key":"api/google","provider":"google","expires_at":"2026-08-13T12:00:00Z"}
+```
+
+`refresh` force-refreshes the access token without waiting for expiry; the access token value is never printed. `status` reports `valid` when the token is still fresh, and `reauth_required` when the refresh token is revoked (`invalid_grant`):
+
+```bash
+$ trustless oauth status api/google
+{"key":"api/google","provider":"google","expires_at":"...","status":"valid"}
+```
+
+**Configuration (`[oauth.providers]`):** define a provider with its token/device endpoints and credentials. The built-in `google` and `lark` definitions ship with the endpoints below — you only need to fill in `client_id` / `client_secret` (register the app in the provider's **developer console**) and any additional scopes:
+
+```toml
+[oauth.providers.google]
+client_id = "YOUR_CLIENT_ID"
+client_secret = "YOUR_CLIENT_SECRET"
+scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+[oauth.providers.lark]
+client_id = "YOUR_CLIENT_ID"
+client_secret = "YOUR_CLIENT_SECRET"
+# scopes 未設定時は既定の offline_access が使われる（refresh token 取得に必須）
+```
+
+| Provider | Device authorization endpoint | Token endpoint | Device auth | Token request |
+|----------|-------------------------------|----------------|-------------|---------------|
+| `google` | `https://oauth2.googleapis.com/device/code` | `https://oauth2.googleapis.com/token` | `body` (client_secret in form body) | `form` |
+| `lark` | `https://accounts.larksuite.com/oauth/v1/device_authorization` | `https://open.larksuite.com/open-apis/authen/v2/oauth/token` | `basic` (Authorization header) | `json` (Lark code-style response) |
+
+`client_id` / `client_secret` are registered in the provider's developer console (Google Cloud Console / Lark Open Platform) — never commit them. OAuth entries in the backend store only the tokens, never the client credentials.
+
+**Notes:**
+- Access tokens are cached in memory (validity minus a 60s safety margin); refresh happens automatically on `Resolve` when expired.
+- When a provider rotates the refresh token (Lark), the updated entry is written back with a **CAS guard** so a concurrent writer is never overwritten.
+- `invalid_grant` (revoked refresh token) is not retried — re-run `trustless oauth login` to re-authenticate.
+
 ### `trustless run` — Subprocess Credential Injection (Core Command)
 
 Run a command with one or more credentials injected as environment variables. The injected values are **never returned to the caller** — only the subprocess stdout/stderr, and any matching credential patterns are redacted.

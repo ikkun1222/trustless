@@ -22,6 +22,7 @@ import (
 	"github.com/ikkun1222/trustless/internal/dlp"
 	dlpconfig "github.com/ikkun1222/trustless/internal/dlp/config"
 	dlpproxy "github.com/ikkun1222/trustless/internal/dlp/proxy"
+	"github.com/ikkun1222/trustless/internal/oauth"
 	"github.com/ikkun1222/trustless/internal/proxy"
 )
 
@@ -62,6 +63,9 @@ func Run(args []string, trustlessCfg *config.Config) {
 	if be == nil {
 		logger.Fatalf("unsupported backend %q", trustlessCfg.Backend)
 	}
+	// OAuth エントリを fresh な access token に解決するデコレータを被せる
+	// （OAuth デコレータはエントリ型を判定し非 OAuth は素通しする）。
+	be = oauth.NewBackend(be, oauth.ProvidersFromConfig(trustlessCfg))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
