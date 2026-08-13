@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"time"
 
+	"github.com/ikkun1222/trustless/internal/audit"
 	"github.com/ikkun1222/trustless/internal/dlp/redact"
 )
 
@@ -28,6 +30,7 @@ type Options struct {
 	UpstreamURL string
 	// Logger receives scan diagnostics. Nil disables logging.
 	Logger *log.Logger
+	Audit  audit.Sink
 }
 
 // Proxy is a reverse proxy that masks secrets in outbound request bodies.
@@ -36,6 +39,7 @@ type Proxy struct {
 	secrets *Secrets
 	minLen  int
 	logger  *log.Logger
+	audit   audit.Sink
 }
 
 // New builds a Proxy forwarding to upstreamURL, masking any secret value
@@ -51,6 +55,7 @@ func New(opts Options) http.Handler {
 		secrets: opts.Secrets,
 		minLen:  opts.MinSecretLen,
 		logger:  opts.Logger,
+		audit:   opts.Audit,
 	}
 	if p.secrets == nil {
 		p.secrets = NewSecrets(nil)
@@ -86,6 +91,15 @@ func (p *Proxy) scanBody(req *http.Request) {
 	masked, changed := redact.ScanAndRedact(string(raw), p.secrets.Snapshot(), p.minLen)
 	if changed {
 		p.logf("scan: redacted secrets in %s %s", req.Method, req.URL.Path)
+		if p.audit != nil {
+			p.audit.Emit(audit.Event{
+				TS:      time.Now(),
+				Event:   audit.DlpRedact,
+				Host:    req.URL.Host,
+				Verdict: audit.VerdictRedact,
+				Detail:  "redacted=true",
+			})
+		}
 	}
 	req.Body = io.NopCloser(bytes.NewReader([]byte(masked)))
 	req.ContentLength = int64(len(masked))

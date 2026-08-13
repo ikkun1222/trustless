@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ikkun1222/trustless/internal/audit"
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
 )
@@ -21,6 +22,7 @@ import (
 type Proxy struct {
 	mu        sync.RWMutex // guards rules/allowlist (hot reload on SIGHUP)
 	backend   backend.Backend
+	audit     audit.Sink
 	port      int
 	unixPath  string
 	rules     map[string]config.ProxyRule
@@ -29,6 +31,17 @@ type Proxy struct {
 
 	muAddr   sync.RWMutex // guards listener (set by Start; read by Addr)
 	listener net.Listener
+}
+
+// SetAudit wires the structured audit sink (nil-safe: no audit when unset).
+func (p *Proxy) SetAudit(s audit.Sink) {
+	p.audit = s
+}
+
+func (p *Proxy) emit(ev audit.Event) {
+	if p.audit != nil {
+		p.audit.Emit(ev)
+	}
 }
 
 // resolveKey resolves a credential key using the standard resolution rule:
@@ -93,6 +106,7 @@ func (p *Proxy) injectByHost(r *http.Request) {
 	if rule.Header != "" {
 		if r.Header.Get(rule.Header) == "" {
 			r.Header.Set(rule.Header, rule.Prefix+val+rule.Suffix)
+			p.emit(audit.Event{TS: time.Now(), Event: audit.ProxyInject, Key: rule.Key, Host: host, Verdict: audit.VerdictInject, Detail: "header=" + rule.Header})
 		}
 		return
 	}
@@ -101,6 +115,7 @@ func (p *Proxy) injectByHost(r *http.Request) {
 		if q.Get(rule.Query) == "" {
 			q.Set(rule.Query, val)
 			r.URL.RawQuery = q.Encode()
+			p.emit(audit.Event{TS: time.Now(), Event: audit.ProxyInject, Key: rule.Key, Host: host, Verdict: audit.VerdictInject, Detail: "query=" + rule.Query})
 		}
 	}
 }
@@ -111,6 +126,7 @@ func (p *Proxy) substituteRequest(r *http.Request) {
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if !p.allowedHost(r.Host) {
+		p.emit(audit.Event{TS: time.Now(), Event: audit.ProxyDeny, Host: hostOnly(r.Host), Verdict: audit.VerdictDeny, Detail: "allowlist"})
 		http.Error(w, "host not allowed by proxy allowlist", http.StatusForbidden)
 		return
 	}
@@ -141,6 +157,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (p *Proxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 	if !p.allowedHost(r.Host) {
+		p.emit(audit.Event{TS: time.Now(), Event: audit.ProxyDeny, Host: hostOnly(r.Host), Verdict: audit.VerdictDeny, Detail: "allowlist"})
 		http.Error(w, "host not allowed by proxy allowlist", http.StatusForbidden)
 		return
 	}
@@ -305,6 +322,13 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 		allowlist: cfg.Proxy.Allowlist,
 	}
 
+	// 単体 proxy コマンドの監査は file sink がデフォルト（serve は journald）。
+	kind := cfg.Audit.Sink
+	if kind == "" {
+		kind = "file"
+	}
+	p.SetAudit(audit.New(kind, cfg.Audit.File, cfg.Audit.Buffer))
+
 	if *mitm {
 		caCfg := DefaultCAPaths()
 		var caErr error
@@ -359,13 +383,14 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 // no SIGHUP loop — `trustless serve` owns signal handling and hot reload
 // centrally. When mitm is set, the shared MITM CA is loaded/generated (the
 // same path start() takes).
-func StartForward(ctx context.Context, be backend.Backend, cfg *config.Config, port int, mitm bool) (*Proxy, error) {
+func StartForward(ctx context.Context, be backend.Backend, cfg *config.Config, port int, mitm bool, sink audit.Sink) (*Proxy, error) {
 	p := &Proxy{
 		backend:   be,
 		port:      port,
 		rules:     cfg.Proxy.Rules,
 		allowlist: cfg.Proxy.Allowlist,
 	}
+	p.SetAudit(sink)
 
 	if mitm {
 		caCfg := DefaultCAPaths()

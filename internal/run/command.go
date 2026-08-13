@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ikkun1222/trustless/internal/audit"
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
 	"github.com/ikkun1222/trustless/internal/scanner"
@@ -115,6 +116,20 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 
 	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
 	cmd.Env = env
+
+	// 監査: 子プロセス起動を記録（値は含めない・コマンド名と引数のみ）
+	kind := cfg.Audit.Sink
+	if kind == "" {
+		kind = "file"
+	}
+	sink := audit.New(kind, cfg.Audit.File, cfg.Audit.Buffer)
+	defer sink.Close()
+	sink.Emit(audit.Event{
+		TS:      time.Now(),
+		Event:   audit.RunSpawn,
+		Verdict: audit.VerdictSpawn,
+		Detail:  fmt.Sprintf("cmd=%s args=%d", path.Base(cmdArgs[0]), len(cmdArgs)-1),
+	})
 
 	if *jsonOutput {
 		runJSON(cmd, sanitize, s, credValues)

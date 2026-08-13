@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ikkun1222/trustless/internal/audit"
+
 	"github.com/ikkun1222/trustless/internal/backend"
 	dlpconfig "github.com/ikkun1222/trustless/internal/dlp/config"
 	dlpproxy "github.com/ikkun1222/trustless/internal/dlp/proxy"
@@ -87,7 +89,7 @@ func start(args []string) {
 	logger.Printf("loaded %d secrets from %s (min length %d)", len(secrets), cfg.SecretsSource, cfg.MinSecretLen)
 
 	secretSet := dlpproxy.NewSecrets(secrets)
-	handler := buildHandler(cfg, secretSet, logger)
+	handler := buildHandler(cfg, secretSet, logger, audit.Off())
 	load := func(cfg *dlpconfig.Config) ([]string, error) {
 		return loadSecrets(cfg)
 	}
@@ -158,7 +160,7 @@ func LoadSecretsFromBackend(be backend.Backend, minLen int) ([]string, error) {
 // its local prefix, forwards the remainder to the upstream (joining the
 // upstream's base path), and masks secrets in the request body. The secrets
 // set is shared across routes and may be hot-swapped at runtime.
-func BuildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.Logger) http.Handler {
+func BuildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.Logger, sink audit.Sink) http.Handler {
 	mux := http.NewServeMux()
 	for _, r := range cfg.Routes {
 		p := dlpproxy.New(dlpproxy.Options{
@@ -166,6 +168,7 @@ func BuildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.
 			MinSecretLen: cfg.MinSecretLen,
 			UpstreamURL:  r.URL,
 			Logger:       logger,
+			Audit:        sink,
 		})
 		stripped := http.StripPrefix(r.Prefix, p)
 		mux.Handle(r.Prefix, stripped)
@@ -175,8 +178,8 @@ func BuildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.
 }
 
 // buildHandler is kept as a thin alias for the in-package tests.
-func buildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.Logger) http.Handler {
-	return BuildHandler(cfg, secrets, logger)
+func buildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.Logger, sink audit.Sink) http.Handler {
+	return BuildHandler(cfg, secrets, logger, sink)
 }
 
 // refreshLoop periodically reloads secrets from the configured source and

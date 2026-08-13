@@ -3,12 +3,14 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/ikkun1222/trustless/internal/audit"
 	"github.com/ikkun1222/trustless/internal/backend"
 )
 
@@ -37,9 +39,34 @@ type OAuthBackend struct {
 	inner     backend.Backend
 	providers map[string]Provider
 	client    *http.Client
+	audit     audit.Sink
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
+}
+
+// SetAudit wires the structured audit sink (nil-safe).
+func (b *OAuthBackend) SetAudit(s audit.Sink) {
+	b.audit = s
+}
+
+// emitRefresh records one oauth refresh outcome: success, reauth required
+// (invalid_grant), or other failure. Only the key name and provider are
+// logged — never token values.
+func (b *OAuthBackend) emitRefresh(key, provider string, err error) {
+	if b.audit == nil {
+		return
+	}
+	ev := audit.Event{TS: time.Now(), Key: key, Detail: "provider=" + provider}
+	switch {
+	case err == nil:
+		ev.Event, ev.Verdict = audit.OAuthRefresh, audit.VerdictRefresh
+	case errors.Is(err, ErrInvalidGrant) || errors.Is(err, ErrReauthRequired):
+		ev.Event, ev.Verdict = audit.OAuthReauthRequired, audit.VerdictReauthRequired
+	default:
+		ev.Event, ev.Verdict = audit.OAuthFail, audit.VerdictFail
+	}
+	b.audit.Emit(ev)
 }
 
 // NewBackend は OAuth デコレータを生成する。
@@ -86,9 +113,11 @@ func (b *OAuthBackend) Resolve(ctx context.Context, key string) (string, error) 
 	orig := entry
 	did, err := RefreshIfNeeded(ctx, b.client, provider, &entry, cacheSkew)
 	if err != nil {
+		b.emitRefresh(key, entry.Provider, err)
 		return "", err
 	}
 	if did {
+		b.emitRefresh(key, entry.Provider, nil)
 		// 他プロセスが先に書き換えていない場合のみ書き戻す。
 		if err := b.writeBackIfUnchanged(ctx, key, orig, entry); err != nil {
 			return "", err
@@ -134,8 +163,10 @@ func (b *OAuthBackend) ForceRefresh(ctx context.Context, key string) (*OAuthEntr
 	}
 	orig := *entry
 	if err := Refresh(ctx, b.client, provider, entry); err != nil {
+		b.emitRefresh(key, entry.Provider, err)
 		return nil, err
 	}
+	b.emitRefresh(key, entry.Provider, nil)
 	if err := b.writeBackIfUnchanged(ctx, key, orig, *entry); err != nil {
 		return nil, err
 	}

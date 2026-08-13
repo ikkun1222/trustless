@@ -49,6 +49,12 @@ const (
 	VerdictReauthRequired = "reauth_required"
 )
 
+// Reopener is implemented by sinks that support logrotate-style reopen
+// (e.g. file sinks) on SIGHUP.
+type Reopener interface {
+	Reopen()
+}
+
 // Sink receives audit events. Implementations must never block or fail the
 // caller: Emit is called on the request hot path.
 type Sink interface {

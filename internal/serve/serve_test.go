@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ikkun1222/trustless/internal/audit"
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
 	dlpconfig "github.com/ikkun1222/trustless/internal/dlp/config"
@@ -145,7 +146,7 @@ func TestServeは注入とDLPの両リスナーを同時に起動する(t *testi
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- serveCore(ctx, injectPort, scrubListen, writeTempDlpConfig(t), false, trustlessCfg, be, log.New(io.Discard, "", 0), nil)
+		errCh <- serveCore(ctx, injectPort, scrubListen, writeTempDlpConfig(t), false, trustlessCfg, be, audit.Off(), log.New(io.Discard, "", 0), nil)
 	}()
 
 	waitDial(t, injectPort)
@@ -165,7 +166,7 @@ func TestServeは注入とDLPの両リスナーを同時に起動する(t *testi
 func TestServeはdlp設定が壊れていると起動に失敗する(t *testing.T) {
 	be := &fakeBackend{}
 	err := serveCore(context.Background(), 18080, "127.0.0.1:18788",
-		filepath.Join(t.TempDir(), "missing.json"), false, &config.Config{}, be, log.New(io.Discard, "", 0), nil)
+		filepath.Join(t.TempDir(), "missing.json"), false, &config.Config{}, be, audit.Off(), log.New(io.Discard, "", 0), nil)
 	if err == nil {
 		t.Fatal("expected error for broken dlp config")
 	}
@@ -176,7 +177,7 @@ func TestServeは秘密ロード失敗で起動に失敗する(t *testing.T) {
 	be.setErr(errors.New("bw session expired (simulated)"))
 
 	err := serveCore(context.Background(), freePort(t), fmt.Sprintf("127.0.0.1:%d", freePort(t)),
-		writeTempDlpConfig(t), false, &config.Config{}, be, log.New(io.Discard, "", 0), nil)
+		writeTempDlpConfig(t), false, &config.Config{}, be, audit.Off(), log.New(io.Discard, "", 0), nil)
 	if err == nil {
 		t.Fatal("expected error when secret load fails")
 	}
@@ -195,13 +196,13 @@ func TestServeは定期リロードで秘密セットを置き換える(t *testi
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
 
-	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, logger)
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, audit.Off(), logger)
 	if got := set.Snapshot(); len(got) != 1 || got[0] != "old-secret-1234567890" {
 		t.Fatalf("set after first reload = %v", got)
 	}
 
 	be.setValues([]string{"new-secret-1234567890"})
-	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, logger)
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, audit.Off(), logger)
 
 	if got := set.Snapshot(); len(got) != 1 || got[0] != "new-secret-1234567890" {
 		t.Fatalf("set after second reload = %v, want new secret", got)
@@ -224,12 +225,12 @@ func TestServeはリロード失敗時に既存秘密を維持する(t *testing.
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
 
-	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, logger)
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, audit.Off(), logger)
 
 	// 2 回目の backend Reload を失敗させても旧セットが維持される（fail-safe）
 	be.setValues([]string{"new-secret-1234567890"})
 	be.setReload(errors.New("bw session expired (simulated)"))
-	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, logger)
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, audit.Off(), logger)
 
 	if got := set.Snapshot(); len(got) != 1 || got[0] != "old-secret-1234567890" {
 		t.Fatalf("set changed on failed reload: %v (want old secret kept)", got)
@@ -253,7 +254,7 @@ func TestServeは手動リロード要求で秘密セットを置き換える(t 
 	logger := log.New(&buf, "", 0)
 	go func() {
 		defer close(done)
-		_ = serveCore(ctx, 0, "127.0.0.1:0", dlpCfgPath, false, &config.Config{}, be, logger, manual)
+		_ = serveCore(ctx, 0, "127.0.0.1:0", dlpCfgPath, false, &config.Config{}, be, audit.Off(), logger, manual)
 	}()
 
 	// 起動時のロード（1回目）を待つ

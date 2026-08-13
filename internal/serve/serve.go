@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ikkun1222/trustless/internal/audit"
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
 	"github.com/ikkun1222/trustless/internal/dlp"
@@ -67,6 +68,17 @@ func Run(args []string, trustlessCfg *config.Config) {
 	// （OAuth デコレータはエントリ型を判定し非 OAuth は素通しする）。
 	be = oauth.NewBackend(be, oauth.ProvidersFromConfig(trustlessCfg))
 
+	// 構造化監査ログ: serve は journald（stdout JSONL）がデフォルト。
+	kind := trustlessCfg.Audit.Sink
+	if kind == "" {
+		kind = "journald"
+	}
+	sink := audit.New(kind, trustlessCfg.Audit.File, trustlessCfg.Audit.Buffer)
+	defer sink.Close()
+	if ob, ok := be.(*oauth.OAuthBackend); ok {
+		ob.SetAudit(sink)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -85,7 +97,7 @@ func Run(args []string, trustlessCfg *config.Config) {
 		}
 	}()
 
-	if err := serveCore(ctx, *injectPort, *scrubListen, *dlpConfigPath, *mitm, trustlessCfg, be, logger, manual); err != nil {
+	if err := serveCore(ctx, *injectPort, *scrubListen, *dlpConfigPath, *mitm, trustlessCfg, be, sink, logger, manual); err != nil {
 		logger.Fatalf("serve: %v", err)
 	}
 }
@@ -114,7 +126,7 @@ func newBackend(cfg *config.Config) backend.Backend {
 // the context is cancelled. Both listeners must bind successfully or the
 // whole serve fails (fail-closed). manual triggers an immediate reload
 // (SIGHUP wiring lives in Run).
-func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath string, mitm bool, trustlessCfg *config.Config, be backend.Backend, logger *log.Logger, manual <-chan struct{}) error {
+func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath string, mitm bool, trustlessCfg *config.Config, be backend.Backend, sink audit.Sink, logger *log.Logger, manual <-chan struct{}) error {
 	dlpCfg, err := dlpconfig.Load(dlpConfigPath)
 	if err != nil {
 		return fmt.Errorf("dlp config: %w", err)
@@ -127,7 +139,7 @@ func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath s
 	logger.Printf("loaded %d secrets (min length %d)", len(secrets), dlpCfg.MinSecretLen)
 	set := dlpproxy.NewSecrets(secrets)
 
-	dlpHandler := recoverMiddleware(dlp.BuildHandler(dlpCfg, set, logger), logger)
+	dlpHandler := recoverMiddleware(dlp.BuildHandler(dlpCfg, set, logger, sink), logger)
 	dlpServer := &http.Server{Handler: dlpHandler}
 	dlpListener, err := net.Listen("tcp", scrubListen)
 	if err != nil {
@@ -139,7 +151,7 @@ func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath s
 		}
 	}()
 
-	fwd, err := proxy.StartForward(ctx, be, trustlessCfg, injectPort, mitm)
+	fwd, err := proxy.StartForward(ctx, be, trustlessCfg, injectPort, mitm, sink)
 	if err != nil {
 		dlpServer.Close()
 		return fmt.Errorf("injection proxy: %w", err)
@@ -163,10 +175,10 @@ func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath s
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			reloadAll(dlpConfigPath, dlpCfg, set, be, fwd, logger)
+			reloadAll(dlpConfigPath, dlpCfg, set, be, fwd, sink, logger)
 		case <-manual:
 			logger.Printf("manual reload requested (SIGHUP)")
-			reloadAll(dlpConfigPath, dlpCfg, set, be, fwd, logger)
+			reloadAll(dlpConfigPath, dlpCfg, set, be, fwd, sink, logger)
 		}
 	}
 }
@@ -175,7 +187,7 @@ func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath s
 // config, then reloads the shared backend and atomically replaces the
 // secrets set. On failure the previous state is kept and the problem is
 // logged as a warning (fail-safe).
-func reloadAll(dlpConfigPath string, dlpCfg *dlpconfig.Config, set *dlpproxy.Secrets, be backend.Backend, fwd *proxy.Proxy, logger *log.Logger) {
+func reloadAll(dlpConfigPath string, dlpCfg *dlpconfig.Config, set *dlpproxy.Secrets, be backend.Backend, fwd *proxy.Proxy, sink audit.Sink, logger *log.Logger) {
 	newTrustless, err := config.Load(config.DefaultConfigPath())
 	if err != nil {
 		logger.Printf("WARN: trustless config reload failed, keeping current rules: %v", err)
@@ -202,6 +214,11 @@ func reloadAll(dlpConfigPath string, dlpCfg *dlpconfig.Config, set *dlpproxy.Sec
 	}
 	set.Replace(fresh)
 	logger.Printf("reloaded %d secrets (min length %d)", len(fresh), newDlpCfg.MinSecretLen)
+
+	// logrotate 対応: file sink は SIGHUP/定期リロードで reopen する。
+	if r, ok := sink.(audit.Reopener); ok {
+		r.Reopen()
+	}
 }
 
 // recoverMiddleware converts a panicking handler into a 500 response so a

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ikkun1222/trustless/internal/audit"
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
 	"github.com/ikkun1222/trustless/internal/dlp"
@@ -85,6 +86,13 @@ func dispatch(cmd string, args []string, be backend.Backend, cfg *config.Config,
 	case "oauth":
 		// oauth.Run は return int 方式（他のコマンドは os.Exit 内部呼び出し）。
 		// exit code を伝播させるため os.Exit で受ける。
+		if ob, ok := obe.(*oauth.OAuthBackend); ok {
+			kind := cfg.Audit.Sink
+			if kind == "" {
+				kind = "file"
+			}
+			ob.SetAudit(audit.New(kind, cfg.Audit.File, cfg.Audit.Buffer))
+		}
 		os.Exit(oauth.Run(args, obe, cfg))
 	case "config":
 		runConfig(args, cfg, cfgPath)

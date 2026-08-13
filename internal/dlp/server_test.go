@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+
+	"github.com/ikkun1222/trustless/internal/audit"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -43,7 +45,7 @@ func TestBuildHandler_E2E(t *testing.T) {
 			{Prefix: "/v1/openai", URL: upstream.URL + "/v1/openai"},
 		},
 	}
-	handler := buildHandler(cfg, proxy.NewSecrets([]string{secret}), log.New(io.Discard, "", 0))
+	handler := buildHandler(cfg, proxy.NewSecrets([]string{secret}), log.New(io.Discard, "", 0), audit.Off())
 	proxyServer := httptest.NewServer(handler)
 	t.Cleanup(proxyServer.Close)
 
@@ -94,7 +96,7 @@ func TestBuildHandler_RouteSelection(t *testing.T) {
 			{Prefix: "/v1/b", URL: upB.URL + "/v1/b"},
 		},
 	}
-	handler := buildHandler(cfg, proxy.NewSecrets(nil), log.New(io.Discard, "", 0))
+	handler := buildHandler(cfg, proxy.NewSecrets(nil), log.New(io.Discard, "", 0), audit.Off())
 	proxyServer := httptest.NewServer(handler)
 	t.Cleanup(proxyServer.Close)
 
