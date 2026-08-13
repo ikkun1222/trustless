@@ -221,6 +221,22 @@ Reload re-reads `config.toml` (rules/allowlist) and refreshes the backend cache 
 
 HTTPS CONNECT tunneling is supported. Without `--mitm`, CONNECT requests pass through without modification. With `--mitm`, the connection is intercepted and host-based credential injection applies.
 
+### `trustless dlp` — Outbound DLP Reverse Proxy (former dlp-proxy)
+
+`trustless dlp` is the successor subcommand for the former `github.com/ikkun1222/dlp-proxy`: an outbound DLP reverse proxy that masks known secrets in LLM API request bodies with `<redacted>` before they leave the host.
+
+```bash
+trustless dlp start -config ~/.config/dlp-proxy/config.json   # start DLP reverse proxy (default 127.0.0.1:8787)
+trustless dlp scrub-db  <db-path> [--apply] [--backup]        # scan / scrub secrets in a SQLite DB
+trustless dlp scrub-text <path>   [--apply]                   # scan / scrub secrets in text files / dirs
+```
+
+- **Config schema is the same JSON as dlp-proxy**: `listen` / `min_secret_len` / `secrets_source` (`pass` | `bitwarden`, default pass) / `secrets_refresh_interval` (**required**, e.g. `"10m"`) / `routes` (prefix → upstream URL)
+- **Secrets load through the shared backend** (`backend.Values`); the former bitwardenloader/passstore are gone
+- **fail-closed**: startup aborts if secrets cannot be loaded; a failed reload keeps the previous set and logs a warning (fail-safe)
+- **Hot reload**: periodic refresh per `secrets_refresh_interval` + immediate reload on SIGHUP
+- The former dlp-proxy repository is frozen (2026-08-13); `trustless dlp` is its replacement
+
 ### `trustless setup` — First-Time Setup Wizard
 
 Interactive wizard that automates the full first-time setup:

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -286,6 +287,99 @@ func Testブートストラップ認証ファイルの必須キー欠落はエ�
 func Testブートストラップ認証ファイル不存在はエラー(t *testing.T) {
 	if _, _, err := loadCredentials(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatalf("expected error for missing credentials file")
+	}
+}
+
+func TestValuesはminLen未満の秘密を除外する(t *testing.T) {
+	fake := &fakeBW{listOutput: testItemsJSON, listErr: nil}
+
+	be := NewBitwardenBackend(Options{
+		SessionPath: filepath.Join(t.TempDir(), "bw-session"),
+		runList:     fake.runList,
+	})
+	if err := be.Load(context.Background()); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	got, err := be.Values(context.Background(), 20)
+	if err != nil {
+		t.Fatalf("values: %v", err)
+	}
+	// キャッシュ値: sk-or-v1-secret(15), ghp_githubpass(13),
+	// the-value-line\nmeta line(24)。minLen=20 で残るのは多行値のみ。
+	want := []string{"the-value-line\nmeta line"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("values = %q, want %q", got, want)
+	}
+}
+
+func TestValuesは重複する値を1つにまとめてソートして返す(t *testing.T) {
+	dupJSON := `[
+  {
+    "id": "item-1",
+    "name": "key-a",
+    "type": 2,
+    "secureNote": {"type": 0},
+    "fields": [
+      {"name": "value", "type": 1, "value": "duplicate-value"}
+    ],
+    "notes": ""
+  },
+  {
+    "id": "item-2",
+    "name": "key-b",
+    "type": 2,
+    "secureNote": {"type": 0},
+    "fields": [
+      {"name": "value", "type": 1, "value": "duplicate-value"}
+    ],
+    "notes": ""
+  },
+  {
+    "id": "item-3",
+    "name": "key-c",
+    "type": 2,
+    "secureNote": {"type": 0},
+    "fields": [
+      {"name": "value", "type": 1, "value": "aaa-value"}
+    ],
+    "notes": ""
+  }
+]`
+	fake := &fakeBW{listOutput: dupJSON, listErr: nil}
+
+	be := NewBitwardenBackend(Options{
+		SessionPath: filepath.Join(t.TempDir(), "bw-session"),
+		runList:     fake.runList,
+	})
+	if err := be.Load(context.Background()); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	got, err := be.Values(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("values: %v", err)
+	}
+	// 重複する duplicate-value は1つにまとめ、ソートして返す
+	want := []string{"aaa-value", "duplicate-value"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("values = %q, want %q", got, want)
+	}
+	if !slices.IsSorted(got) {
+		t.Fatalf("values not sorted: %q", got)
+	}
+}
+
+func TestValuesはbitwardenキャッシュ未ロード時にエラーを返す(t *testing.T) {
+	fake := &fakeBW{listOutput: testItemsJSON, listErr: nil}
+
+	be := NewBitwardenBackend(Options{
+		SessionPath: filepath.Join(t.TempDir(), "bw-session"),
+		runList:     fake.runList,
+	})
+
+	if _, err := be.Values(context.Background(), 0); err == nil {
+		t.Fatalf("expected error when cache not loaded")
 	}
 }
 

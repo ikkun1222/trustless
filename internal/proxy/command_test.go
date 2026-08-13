@@ -24,6 +24,7 @@ func (m *mockBackend) Resolve(_ context.Context, key string) (string, error) {
 }
 func (m *mockBackend) List(context.Context) ([]backend.Entry, error) { return nil, nil }
 func (m *mockBackend) Set(context.Context, string, string) error     { return errors.New("read only") }
+func (m *mockBackend) Values(context.Context, int) ([]string, error) { return nil, nil }
 
 func newTestProxy(rules map[string]config.ProxyRule, allowlist []string) *Proxy {
 	return &Proxy{

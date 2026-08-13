@@ -11,6 +11,7 @@ import (
 
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
+	"github.com/ikkun1222/trustless/internal/dlp"
 	"github.com/ikkun1222/trustless/internal/doctor"
 	"github.com/ikkun1222/trustless/internal/proxy"
 	"github.com/ikkun1222/trustless/internal/run"
@@ -41,6 +42,13 @@ func main() {
 	// so it bypasses backend initialization entirely.
 	if cmd == "bw-unlock" {
 		runBWUnlock(args)
+		return
+	}
+
+	// dlp is standalone: it selects its own backend from the dlp config
+	// (secrets_source), so it skips the global backend initialization.
+	if cmd == "dlp" {
+		dlp.Run(args)
 		return
 	}
 
