@@ -66,7 +66,22 @@ func Run(args []string, trustlessCfg *config.Config) {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := serveCore(ctx, *injectPort, *scrubListen, *dlpConfigPath, *mitm, trustlessCfg, be, logger); err != nil {
+	// SIGHUP: immediate reload of both configs + shared backend (same
+	// semantics as the standalone proxy/dlp processes). Without this wiring
+	// SIGHUP would kill the process (default Go behavior).
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	manual := make(chan struct{}, 1)
+	go func() {
+		for range hup {
+			select {
+			case manual <- struct{}{}:
+			default: // 既に要求が溜まっている場合は1つに集約
+			}
+		}
+	}()
+
+	if err := serveCore(ctx, *injectPort, *scrubListen, *dlpConfigPath, *mitm, trustlessCfg, be, logger, manual); err != nil {
 		logger.Fatalf("serve: %v", err)
 	}
 }
@@ -93,8 +108,9 @@ func newBackend(cfg *config.Config) backend.Backend {
 // serveCore starts the injection proxy and the DLP reverse proxy as
 // goroutines on the same context, then runs the periodic reload loop until
 // the context is cancelled. Both listeners must bind successfully or the
-// whole serve fails (fail-closed).
-func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath string, mitm bool, trustlessCfg *config.Config, be backend.Backend, logger *log.Logger) error {
+// whole serve fails (fail-closed). manual triggers an immediate reload
+// (SIGHUP wiring lives in Run).
+func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath string, mitm bool, trustlessCfg *config.Config, be backend.Backend, logger *log.Logger, manual <-chan struct{}) error {
 	dlpCfg, err := dlpconfig.Load(dlpConfigPath)
 	if err != nil {
 		return fmt.Errorf("dlp config: %w", err)
@@ -143,6 +159,9 @@ func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath s
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			reloadAll(dlpConfigPath, dlpCfg, set, be, fwd, logger)
+		case <-manual:
+			logger.Printf("manual reload requested (SIGHUP)")
 			reloadAll(dlpConfigPath, dlpCfg, set, be, fwd, logger)
 		}
 	}

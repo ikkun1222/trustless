@@ -175,8 +175,14 @@ func (p *Proxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) Start(ctx context.Context) error {
-	handler := p.handler()
+	if err := p.bindListener(); err != nil {
+		return err
+	}
+	return p.serve(ctx)
+}
 
+// bindListener binds the listen address and records the listener for Addr.
+func (p *Proxy) bindListener() error {
 	listener, err := p.listen()
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
@@ -184,15 +190,19 @@ func (p *Proxy) Start(ctx context.Context) error {
 	p.muAddr.Lock()
 	p.listener = listener
 	p.muAddr.Unlock()
+	return nil
+}
 
-	server := &http.Server{Handler: handler}
+// serve runs the HTTP server on the bound listener until ctx is cancelled.
+func (p *Proxy) serve(ctx context.Context) error {
+	server := &http.Server{Handler: p.handler()}
 
 	go func() {
 		<-ctx.Done()
 		server.Close()
 	}()
 
-	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+	if err := server.Serve(p.listener); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
@@ -366,9 +376,18 @@ func StartForward(ctx context.Context, be backend.Backend, cfg *config.Config, p
 		p.ca = ca
 	}
 
-	if err := p.Start(ctx); err != nil {
+	// Bind synchronously so callers fail fast (fail-closed): a port that
+	// cannot be bound aborts serve before any listener starts serving.
+	if err := p.bindListener(); err != nil {
 		return nil, err
 	}
+	// Serve in the background — StartForward must return so the caller's
+	// reload loop can run. Serve errors (beyond ctx cancellation) are logged.
+	go func() {
+		if err := p.serve(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "trustless proxy error: %v\n", err)
+		}
+	}()
 	return p, nil
 }
 

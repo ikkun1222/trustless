@@ -145,7 +145,7 @@ func TestServeは注入とDLPの両リスナーを同時に起動する(t *testi
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- serveCore(ctx, injectPort, scrubListen, writeTempDlpConfig(t), false, trustlessCfg, be, log.New(io.Discard, "", 0))
+		errCh <- serveCore(ctx, injectPort, scrubListen, writeTempDlpConfig(t), false, trustlessCfg, be, log.New(io.Discard, "", 0), nil)
 	}()
 
 	waitDial(t, injectPort)
@@ -165,7 +165,7 @@ func TestServeは注入とDLPの両リスナーを同時に起動する(t *testi
 func TestServeはdlp設定が壊れていると起動に失敗する(t *testing.T) {
 	be := &fakeBackend{}
 	err := serveCore(context.Background(), 18080, "127.0.0.1:18788",
-		filepath.Join(t.TempDir(), "missing.json"), false, &config.Config{}, be, log.New(io.Discard, "", 0))
+		filepath.Join(t.TempDir(), "missing.json"), false, &config.Config{}, be, log.New(io.Discard, "", 0), nil)
 	if err == nil {
 		t.Fatal("expected error for broken dlp config")
 	}
@@ -176,7 +176,7 @@ func TestServeは秘密ロード失敗で起動に失敗する(t *testing.T) {
 	be.setErr(errors.New("bw session expired (simulated)"))
 
 	err := serveCore(context.Background(), freePort(t), fmt.Sprintf("127.0.0.1:%d", freePort(t)),
-		writeTempDlpConfig(t), false, &config.Config{}, be, log.New(io.Discard, "", 0))
+		writeTempDlpConfig(t), false, &config.Config{}, be, log.New(io.Discard, "", 0), nil)
 	if err == nil {
 		t.Fatal("expected error when secret load fails")
 	}
@@ -236,6 +236,45 @@ func TestServeはリロード失敗時に既存秘密を維持する(t *testing.
 	}
 	if !strings.Contains(buf.String(), "WARN: backend reload failed") {
 		t.Fatalf("expected WARN log, got: %s", buf.String())
+	}
+}
+
+func TestServeは手動リロード要求で秘密セットを置き換える(t *testing.T) {
+	isolateTrustlessConfig(t)
+	dlpCfgPath := writeTempDlpConfig(t) // secrets_refresh_interval: 10m → ticker は遠い
+
+	be := &fakeBackend{}
+	be.setValues([]string{"old-secret-1234567890"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	manual := make(chan struct{}, 1)
+	done := make(chan struct{})
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	go func() {
+		defer close(done)
+		_ = serveCore(ctx, 0, "127.0.0.1:0", dlpCfgPath, false, &config.Config{}, be, logger, manual)
+	}()
+
+	// 起動時のロード（1回目）を待つ
+	deadline := time.Now().Add(2 * time.Second)
+	for be.valuesCalls.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	// 手動リロード要求 → ticker を待たずに即時リロード（2回目）
+	manual <- struct{}{}
+	deadline = time.Now().Add(2 * time.Second)
+	for be.valuesCalls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done // serveCore の全処理完了を待つ（バッファ競合防止）
+
+	if be.valuesCalls.Load() < 2 {
+		t.Fatalf("manual reload did not trigger (calls=%d)", be.valuesCalls.Load())
+	}
+	if !strings.Contains(buf.String(), "manual reload requested") {
+		t.Fatalf("expected manual reload log, got: %s", buf.String())
 	}
 }
 
