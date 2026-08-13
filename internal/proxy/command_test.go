@@ -184,6 +184,54 @@ func TestProxyallowlist空は全許可(t *testing.T) {
 	}
 }
 
+func TestProxyReloadでルールが即時反映される(t *testing.T) {
+	// SIGHUP 相当: rules/allowlist を差し替えた後、次のリクエストから新ルールが効く
+	p := newTestProxy(map[string]config.ProxyRule{
+		"api.x.ai": {Header: "Authorization", Key: "xai", Prefix: "Bearer "},
+	}, nil)
+
+	// 旧ルール: 注入される
+	req := httptestNewRequest("GET", "https://api.x.ai/v1/models")
+	p.substituteRequest(req)
+	if got := req.Header.Get("Authorization"); got != "Bearer sk-test-xai-12345" {
+		t.Fatalf("old rule: Authorization = %q", got)
+	}
+
+	// ルール差し替え（キー変更: openrouter を注入するように）
+	newRules := map[string]config.ProxyRule{
+		"api.x.ai": {Header: "Authorization", Key: "openrouter", Prefix: "Bearer "},
+	}
+	p.mu.Lock()
+	p.rules = newRules
+	p.mu.Unlock()
+
+	// 新ルール: 別キーが注入される
+	req2 := httptestNewRequest("GET", "https://api.x.ai/v1/models")
+	p.substituteRequest(req2)
+	if got := req2.Header.Get("Authorization"); got != "Bearer sk-or-v1-test" {
+		t.Fatalf("new rule: Authorization = %q, want Bearer sk-or-v1-test", got)
+	}
+}
+
+func TestProxyReloadでallowlistが即時反映される(t *testing.T) {
+	p := newTestProxy(nil, nil)
+
+	if !p.allowedHost("evil.example.com") {
+		t.Fatal("empty allowlist must permit all hosts before reload")
+	}
+
+	p.mu.Lock()
+	p.allowlist = []string{"api.x.ai"}
+	p.mu.Unlock()
+
+	if p.allowedHost("evil.example.com") {
+		t.Fatal("allowlist applied on reload must reject non-listed host")
+	}
+	if !p.allowedHost("api.x.ai") {
+		t.Fatal("allowlist applied on reload must permit listed host")
+	}
+}
+
 func TestProxyCONNECTリクエストは404にならずトンネル処理される(t *testing.T) {
 	// Go の ServeMux は CONNECT をホストでルーティングするため "/" パターンに
 	// マッチせず 404 になるバグがあった。handler() は CONNECT を明示的に処理する。

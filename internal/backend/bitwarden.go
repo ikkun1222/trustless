@@ -207,6 +207,16 @@ func (b *BitwardenBackend) Load(ctx context.Context) error {
 	return b.loadLocked(ctx)
 }
 
+// Reload re-fetches the vault and swaps the in-memory cache (hot reload).
+// Used on SIGHUP so credential rotations are visible immediately instead of
+// waiting for the 24h cache TTL. Fail-closed on session errors: the cache is
+// left untouched so Resolve keeps serving the previous snapshot.
+func (b *BitwardenBackend) Reload(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.loadLocked(ctx)
+}
+
 func (b *BitwardenBackend) loadLocked(ctx context.Context) error {
 	out, err := b.runList(ctx)
 	if err != nil {

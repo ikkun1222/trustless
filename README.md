@@ -192,6 +192,16 @@ export HTTPS_PROXY=http://127.0.0.1:8080
 allowlist = ["api.x.ai", "api.edinet-fsa.go.jp"]
 ```
 
+**Hot reload (SIGHUP):** rule/allowlist changes and credential rotations take effect without a restart.
+
+```bash
+systemctl --user reload trustless-proxy   # systemd: sends SIGHUP
+# or manually:
+# kill -HUP $(pgrep -f "trustless proxy start")
+```
+
+Reload re-reads `config.toml` (rules/allowlist) and refreshes the backend cache (bitwarden), so newly rotated keys are visible immediately instead of waiting for the 24h cache TTL.
+
 **MITM mode (`--mitm`):**
 - Enables HTTPS interception for credential injection into encrypted requests
 - Auto-generates a root CA certificate at `~/.config/trustless/trustless-ca.{crt,key}` on first use

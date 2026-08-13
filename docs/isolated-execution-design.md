@@ -154,6 +154,9 @@ trustless の `run`（サブプロセス注入）は、エージェントと同�
    - 実機E2E: tavilyで素のリクエスト→Authorization注入→実データ取得成功
    - 修正: CONNECTルーティング404バグ（ServeMuxはCONNECTをホストでルーティング）・
      MITM leaf証明書のSANにポートが混入するバグ
+   - **ホットリロード（SIGHUP）**: config再読込+bitwardenキャッシュ強制リフレッシュ。
+     `systemctl --user reload trustless-proxy` でルール変更・キーローテーションを即時反映
+     （実測: reload後 rules=8 再読込・注入継続を確認）
 7. **エージェント環境（HTTPS_PROXY）適用** — 設定済み・次回gateway再起動で有効
    - trustless-gateway.sh に HTTPS_PROXY/HTTP_PROXY/NO_PROXY を追加
    - NO_PROXY=127.0.0.1 でdlp-proxy（LLM経路）を除外（実測200確認）

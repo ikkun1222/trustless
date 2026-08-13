@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/ikkun1222/trustless/internal/backend"
@@ -17,6 +18,7 @@ import (
 )
 
 type Proxy struct {
+	mu        sync.RWMutex // guards rules/allowlist (hot reload on SIGHUP)
 	backend   backend.Backend
 	port      int
 	unixPath  string
@@ -50,6 +52,8 @@ func hostOnly(host string) string {
 // allowedHost checks the host against the allowlist. An empty allowlist
 // permits all hosts (no egress restriction).
 func (p *Proxy) allowedHost(host string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	if len(p.allowlist) == 0 {
 		return true
 	}
@@ -71,7 +75,9 @@ func (p *Proxy) injectByHost(r *http.Request) {
 	if host == "" {
 		host = hostOnly(r.URL.Host)
 	}
+	p.mu.RLock()
 	rule, ok := p.rules[host]
+	p.mu.RUnlock()
 	if !ok {
 		return
 	}
@@ -273,6 +279,33 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// SIGHUP: hot reload — re-read config (rules/allowlist) and refresh the
+	// backend cache so credential rotations take effect without restart.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for range hup {
+			cfgPath := config.DefaultConfigPath()
+			newCfg, err := config.Load(cfgPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "trustless proxy: SIGHUP reload failed: %v\n", err)
+				continue
+			}
+			p.mu.Lock()
+			p.rules = newCfg.Proxy.Rules
+			p.allowlist = newCfg.Proxy.Allowlist
+			p.mu.Unlock()
+			if r, ok := be.(interface{ Reload(context.Context) error }); ok {
+				if err := r.Reload(ctx); err != nil {
+					fmt.Fprintf(os.Stderr, "trustless proxy: SIGHUP backend reload failed: %v\n", err)
+					continue
+				}
+			}
+			fmt.Fprintf(os.Stderr, "trustless proxy: SIGHUP reloaded (rules=%d allowlist=%d)\n",
+				len(newCfg.Proxy.Rules), len(newCfg.Proxy.Allowlist))
+		}
+	}()
 
 	fmt.Fprintf(os.Stderr, "trustless proxy listening on 127.0.0.1:%d\n", *port)
 	if err := p.Start(ctx); err != nil {
