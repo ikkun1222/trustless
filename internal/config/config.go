@@ -16,6 +16,27 @@ type Config struct {
 	Proxy       ProxyConfig    `toml:"proxy"`
 	Sanitize    SanitizeConfig `toml:"sanitize"`
 	Policy      PolicyConfig   `toml:"policy"`
+	OAuth       OAuthConfig    `toml:"oauth"`
+}
+
+// OAuthConfig holds OAuth provider definitions. The TOML field names match
+// oauth.Provider so the boundary mapping is mechanical.
+type OAuthConfig struct {
+	Providers map[string]OAuthProvider `toml:"providers"`
+}
+
+// OAuthProvider mirrors oauth.Provider for config deserialization. It lives
+// in config (not oauth) to avoid an import cycle: the oauth command package
+// imports config, so config cannot import oauth.
+type OAuthProvider struct {
+	TokenURL          string   `toml:"token_url"`
+	DeviceURL         string   `toml:"device_url"`
+	ClientID          string   `toml:"client_id"`
+	ClientSecret      string   `toml:"client_secret"`
+	Scopes            []string `toml:"scopes"`
+	TokenRequestStyle string   `toml:"token_request_style"` // "form" | "json"
+	DeviceAuthStyle   string   `toml:"device_auth_style"`   // "body" | "basic"
+	Refreshable       bool     `toml:"refreshable"`
 }
 
 type RunDefaults struct {
@@ -89,6 +110,7 @@ func Default() *Config {
 			Patterns: defaultPatterns,
 		},
 		Policy: PolicyConfig{},
+		OAuth:  OAuthConfig{Providers: make(map[string]OAuthProvider)},
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/ikkun1222/trustless/internal/config"
 	"github.com/ikkun1222/trustless/internal/dlp"
 	"github.com/ikkun1222/trustless/internal/doctor"
+	"github.com/ikkun1222/trustless/internal/oauth"
 	"github.com/ikkun1222/trustless/internal/proxy"
 	"github.com/ikkun1222/trustless/internal/run"
 	"github.com/ikkun1222/trustless/internal/secret"
@@ -64,6 +65,12 @@ func main() {
 
 	be := newBackend(cfg)
 
+	dispatch(cmd, args, be, cfg, cfgPath)
+}
+
+// dispatch は backend 初期化後に実行するサブコマンドを振り分ける。
+// main の cyclomatic complexity を CCN 15 以下に保つため分離している。
+func dispatch(cmd string, args []string, be backend.Backend, cfg *config.Config, cfgPath string) {
 	switch cmd {
 	case "secret":
 		secret.Run(args, be, cfg)
@@ -71,6 +78,8 @@ func main() {
 		run.Run(args, be, cfg)
 	case "proxy":
 		proxy.Run(args, be, cfg)
+	case "oauth":
+		oauth.Run(args, oauth.NewBackend(be, oauth.ProvidersFromConfig(cfg)), cfg)
 	case "config":
 		runConfig(args, cfg, cfgPath)
 	case "version":
@@ -115,6 +124,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  trustless secret     Manage credentials (list, get, set)")
 	fmt.Fprintln(os.Stderr, "  trustless run        Run command with injected credentials")
 	fmt.Fprintln(os.Stderr, "  trustless proxy      Start credential injection proxy")
+	fmt.Fprintln(os.Stderr, "  trustless oauth      Manage OAuth credentials (login, refresh, status, providers)")
 	fmt.Fprintln(os.Stderr, "  trustless serve      Run injection + DLP proxies in one process")
 	fmt.Fprintln(os.Stderr, "  trustless config     Manage configuration")
 	fmt.Fprintln(os.Stderr, "  trustless version    Show version information")
