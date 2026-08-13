@@ -30,10 +30,10 @@ func defaultConfigPath() string {
 	return filepath.Join(home, ".config", "dlp-proxy", "config.json")
 }
 
-// Run dispatches the `trustless dlp` subcommands. Only `start` is implemented
-// (scrub-db / scrub-text arrive in a later step); unknown subcommands print
+// Run dispatches the `trustless dlp` subcommands. Unknown subcommands print
 // the usage to stderr and exit 1.
 func Run(args []string) {
+	logger := log.New(os.Stderr, "dlp-proxy: ", log.LstdFlags)
 	if len(args) < 1 {
 		printUsage()
 		os.Exit(1)
@@ -41,6 +41,14 @@ func Run(args []string) {
 	switch args[0] {
 	case "start":
 		start(args[1:])
+	case "scrub-db":
+		if err := runScrubE(args[1:], logger); err != nil {
+			logger.Fatalf("scrub-db: %v", err)
+		}
+	case "scrub-text":
+		if err := runScrubTextE(args[1:], logger); err != nil {
+			logger.Fatalf("scrub-text: %v", err)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown dlp subcommand: %s\n", args[0])
 		printUsage()
@@ -52,7 +60,9 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: trustless dlp <command> [<args>]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  start    Start the DLP reverse proxy")
+	fmt.Fprintln(os.Stderr, "  start       Start the DLP reverse proxy")
+	fmt.Fprintln(os.Stderr, "  scrub-db    Scan/scrub secrets from a local SQLite DB")
+	fmt.Fprintln(os.Stderr, "  scrub-text  Scan/scrub secrets from text files")
 }
 
 // start loads the config, selects the backend from secrets_source, loads the
