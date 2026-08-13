@@ -69,6 +69,27 @@ func (p *PassBackend) List(ctx context.Context) ([]Entry, error) {
 	return entries, nil
 }
 
+// Values decrypts every entry in the pass store via Resolve and returns the
+// secret values with len(value) >= minLen, deduplicated and sorted. A single
+// decryption failure fails closed: callers must not scrub with a partial list.
+func (p *PassBackend) Values(ctx context.Context, minLen int) ([]string, error) {
+	entries, err := p.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]string, 0, len(entries))
+	for _, e := range entries {
+		val, err := p.Resolve(ctx, e.Key)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %s: %w", e.Key, err)
+		}
+		if len(val) >= minLen {
+			values = append(values, val)
+		}
+	}
+	return dedupSort(values), nil
+}
+
 // Set stores a secret in pass, replacing any existing value. The value is fed
 // via stdin so it never appears on argv (ps / shell history leak).
 func (p *PassBackend) Set(ctx context.Context, key, value string) error {

@@ -321,6 +321,18 @@ func (b *BitwardenBackend) List(ctx context.Context) ([]Entry, error) {
 	return entries, nil
 }
 
+// Values returns all cached secret values with len(value) >= minLen,
+// deduplicated and sorted for deterministic output. The cache is only
+// populated by Load/Reload/Resolve/Set, so an unloaded cache fails closed.
+func (b *BitwardenBackend) Values(ctx context.Context, minLen int) ([]string, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if !b.cacheInit {
+		return nil, &bwError{msg: "bitwarden cache not loaded"}
+	}
+	return collectValues(b.cache, minLen), nil
+}
+
 // Set stores or replaces the secret for key with upsert semantics: an
 // existing item is updated in place (keeping its notes and other fields),
 // a new key is created as a secureNote with a hidden field named "value" —

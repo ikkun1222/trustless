@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 )
 
 type EnvBackend struct{}
@@ -22,6 +23,20 @@ func (e *EnvBackend) Resolve(ctx context.Context, key string) (string, error) {
 
 func (e *EnvBackend) List(ctx context.Context) ([]Entry, error) {
 	return []Entry{}, nil
+}
+
+// Values returns the values of all environment variables with len >= minLen,
+// deduplicated and sorted. For the env backend the "known secrets" are simply
+// the environment variable values.
+func (e *EnvBackend) Values(ctx context.Context, minLen int) ([]string, error) {
+	values := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		_, v, _ := strings.Cut(kv, "=")
+		if len(v) >= minLen {
+			values = append(values, v)
+		}
+	}
+	return dedupSort(values), nil
 }
 
 // Set is not supported for the env backend: environment variables cannot be
