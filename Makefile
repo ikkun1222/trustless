@@ -32,8 +32,10 @@ complexity:
 lint: fmt-check vet complexity
 
 # Scan staged diff for credential patterns (git-secrets replacement, zero-dep)
+# Test files are excluded: their fixture values (sk-xxx, xoxb-xxx) are dummy
+# strings that would false-positive the scan (see project-conventions skill).
 secrets-check:
-	@git diff --cached | grep -nEi '^\+.*(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC) PRIVATE|xox[baprs]-[A-Za-z0-9-]{10,})' \
+	@git diff --cached -- . ':(exclude)*_test.go' | grep -nEi '^\+(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC) PRIVATE|xox[baprs]-[A-Za-z0-9-]{10,})' \
 		&& { echo "!! SECRET PATTERN DETECTED IN STAGED DIFF"; exit 1; } || true
 	@echo "secrets OK"
 
