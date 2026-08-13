@@ -114,8 +114,8 @@ trustless の `run`（サブプロセス注入）は、エージェントと同�
 | LLM API（merge/openrouter/sakura/google/vercel等） | `trustless dlp start` (127.0.0.1:8787) | 送信DLP（リクエストボディのシークレットマスク） |
 | 一般API（EDINET/e-Stat/xai等） | `trustless proxy start` (127.0.0.1:8080) | 認証注入（ホストベース） |
 
-- 両者とも secrets_source=bitwarden・systemd常駐で統一。**2026-08-13 に 1 バイナリ化**（旧 dlp-proxy リポジトリは凍結、`internal/dlp/` に統合・秘密ロードは共通 backend.Values）
-- 現在は 1 バイナリ・2 ユニット構成。**2026-08-13 に 1 プロセス統合完了（`trustless serve`・`trustless.service` 1 ユニット・2 リスナー）**。旧 dlp-proxy.service / trustless-proxy.service は disable 済み（ロールバック用に残置）。serve は共有 backend（1 キャッシュ）・SIGHUP = 両 config + backend リロード・リスナー単位 recover・dlp config エラーは全 egress 停止（fail-closed 優先）
+- 両者とも secrets_source=bitwarden・systemd常駐で統一。**2026-08-13 に 1 バイナリ化**（旧 dlp-proxy リポジトリは削除、`internal/dlp/` に統合・秘密ロードは共通 backend.Values）
+- 現在は 1 バイナリ・2 ユニット構成。**2026-08-13 に 1 プロセス統合完了（`trustless serve`・`trustless.service` 1 ユニット・2 リスナー）**。旧 dlp-proxy.service / trustless-proxy.service は同日削除済み（`~/hermes-config-backup/systemd/` に退避・復元可能）。serve は共有 backend（1 キャッシュ）・SIGHUP = 両 config + backend リロード・リスナー単位 recover・dlp config エラーは全 egress 停止（fail-closed 優先）
 - trustless proxy はフォワードプロキシ（HTTPS_PROXY設定）、dlp はリバースプロキシ
   （base_url差し替え）なので経路が重ならない
 - エージェント（Hermes/opencode）の設定: LLM系はdlp-proxy経由、それ以外のAPIは
