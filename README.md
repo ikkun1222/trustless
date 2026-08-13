@@ -167,6 +167,31 @@ client_secret = "YOUR_CLIENT_SECRET"
 
 `client_id` / `client_secret` are registered in the provider's developer console (Google Cloud Console / Lark Open Platform) — never commit them. OAuth entries in the backend store only the tokens, never the client credentials.
 
+### `trustless audit` — Structured Audit Log
+
+All events (proxy injection/deny, run spawn, DLP redaction, OAuth refresh/failure/reauth) are recorded as JSONL. **No token or secret values ever appear in events** — only key names, hosts, verdicts, and small details.
+
+| Sink | Where | Default |
+|------|-------|---------|
+| `journald` | serve (stdout JSONL → systemd journald) | serve |
+| `file` | append-only `~/.local/state/trustless/audit.jsonl` (0600, SIGHUP-reopen for logrotate) | run / proxy / oauth |
+| `off` | discard | — |
+
+```toml
+[audit]
+sink = "file"        # "journald" | "file" | "off"（未設定はコマンド別デフォルト）
+file = "~/.local/state/trustless/audit.jsonl"
+buffer = 1024
+```
+
+```bash
+$ journalctl --user -u trustless | grep '"event"'
+{"ts":"...","event":"proxy.inject","key":"edinet","host":"api.edinet-fsa.go.jp","verdict":"inject","detail":"header=Ocp-Apim-Subscription-Key"}
+{"ts":"...","event":"oauth.refresh","key":"iria/api/lark-oauth","verdict":"refresh","detail":"provider=lark"}
+```
+
+Events: `proxy.inject` / `proxy.deny` / `run.spawn` / `dlp.redact` / `oauth.refresh` / `oauth.fail` / `oauth.reauth_required`.
+
 **Notes:**
 - Access tokens are cached in memory (validity minus a 60s safety margin); refresh happens automatically on `Resolve` when expired.
 - When a provider rotates the refresh token (Lark), the updated entry is written back with a **CAS guard** so a concurrent writer is never overwritten.

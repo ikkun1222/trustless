@@ -123,6 +123,51 @@ Lark は refresh token を **7 日で失効**させる（`refresh_token_expires_
 - **Lark の refresh token は single-use**（`invalid_grant: ... can only be used once`）: refresh ごとにローテーションされ旧トークンは即無効化。CAS ガード（書き戻し時の refresh 値比較）が二重 refresh 競合で古い値を残さないことを保証する。消費済みトークンは `oauth status` が `reauth_required` を返し、`oauth login` で再認可が必要
 - **OAuth 統合は run / proxy / serve がデコレータ経由**（main.go の dispatch・serve の backend 構築で `oauth.NewBackend` を適用）。`secret get` は生エントリ（圧縮ラップ含む）を返すため、OAuth エントリの確認は `oauth status` / `oauth refresh` を使う
 
+## 構造化監査ログ（Phase 0・2026-08-14）
+
+全イベントを構造化 JSONL で記録する `internal/audit` パッケージ。**依存ゼロ（stdlib のみ）・ホットパス非破壊（非同期・満杯 drop・エラーは握りつぶし）・秘密混入禁止**が設計原則。
+
+### スキーマ
+
+```json
+{"ts":"2026-08-14T00:00:00.000Z","event":"proxy.inject","key":"iria/api/xai","host":"api.x.ai","verdict":"inject","detail":"header=Authorization"}
+```
+
+- `ts`: UTC RFC3339Nano・`key`/`host`/`verdict`/`detail` は空なら omitempty
+- **記録されるのはキー名・ホスト・verdict・小さな detail のみ。トークン値・シークレット値・生の argv は絶対に含めない**（run.spawn は `cmd=<名> args=<数>` のみ）
+
+### イベント一覧（実機検証済み 2026-08-14）
+
+| event | 発火点 | 備考 |
+|---|---|---|
+| `proxy.inject` | 注入ルール適用時（header/query） | serve/proxy 単体 |
+| `proxy.deny` | allowlist 違反 403 | 実機確認（allowlist config で gmail 拒否） |
+| `run.spawn` | 子プロセス起動 | 値は含めない |
+| `dlp.redact` | ボディの既知シークレット置換時 | detail=`redacted=true` |
+| `oauth.refresh` | refresh 成功 | detail=`provider=<name>` |
+| `oauth.fail` | refresh 失敗（invalid_grant 以外） | |
+| `oauth.reauth_required` | invalid_grant → 再認可必要 | `oauth status` の reauth_required と一致 |
+
+※ `dlp.deny` は計画段階で想定したが**不採用**（dlp に allowlist/deny 点が存在しないため。YAGNI）
+
+### Sink とデフォルト
+
+- `[audit] sink = "journald" | "file" | "off"` / `audit.file = <path>` / `audit.buffer = 1024`
+- **デフォルト**: serve = `journald`（stdout JSONL → systemd journald）・run/proxy/oauth 単体 = `file`（`~/.local/state/trustless/audit.jsonl`・0600）
+- file sink: 非同期 worker・満杯 drop（`Dropped()` で確認可）・**SIGHUP/定期リロードで Reopen**（logrotate 対応・reloadAll に組み込み）
+- 未設定（sink 空）は呼び出し側デフォルト適用。`off` は明示無効
+
+### 運用
+
+```bash
+# serve の監査ログ（journald）
+journalctl --user -u trustless | grep '"event"'
+# 単体コマンドの監査ログ（file）
+tail -f ~/.local/state/trustless/audit.jsonl
+# logrotate: リネーム後 SIGHUP で reopen
+mv audit.jsonl audit.jsonl.1 && kill -HUP $(pgrep -f 'trustless serve')
+```
+
 ## Command Reference
 
 ### `trustless secret` — Credential Store Operations
