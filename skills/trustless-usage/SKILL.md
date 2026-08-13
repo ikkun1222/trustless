@@ -35,6 +35,10 @@ This machine uses [trustless](https://github.com/ikkun1222/trustless) CLI for cr
 
 Some credentials are OAuth entries (stored as `type=oauth` JSON). They resolve like any other key via `trustless run -s <key>`, and trustless auto-refreshes the access token when it expires. If resolution fails with a reauth error (refresh token revoked), re-authenticate with `trustless oauth login <provider> <key>` — or run `trustless oauth refresh <key>` to force a refresh ahead of expiry. Check state with `trustless oauth status <key>` and list configured providers with `trustless oauth providers`.
 
+## Audit Logs
+
+trustless records structured audit events as JSONL — `proxy.inject` / `proxy.deny` / `run.spawn` / `dlp.redact` / `oauth.refresh` / `oauth.fail` / `oauth.reauth_required`. **Events never contain token or secret values** — only key names, hosts, and verdicts. The serve process writes to journald (or stdout JSONL); standalone commands append to `~/.local/state/trustless/audit.jsonl` (0600). View with `journalctl --user -u trustless | grep '"event"'` or `tail -f ~/.local/state/trustless/audit.jsonl`.
+
 ## Running Commands with Credentials
 
 To run a command with credential injection:
