@@ -131,8 +131,17 @@ func loadSecrets(cfg *dlpconfig.Config) ([]string, error) {
 	default:
 		return nil, fmt.Errorf("unsupported secrets source %q", cfg.SecretsSource)
 	}
+	return LoadSecretsFromBackend(be, cfg.MinSecretLen)
+}
 
-	vals, err := be.Values(context.Background(), cfg.MinSecretLen)
+// LoadSecretsFromBackend loads known secrets from an already-constructed
+// backend: every value with len >= minLen, deduplicated and sorted, with
+// email addresses excluded (they are identifiers, not credentials). Any
+// error is fail-closed. This is the shared-backend entry point used by
+// `trustless serve`, which reuses the single backend it created for both
+// listeners.
+func LoadSecretsFromBackend(be backend.Backend, minLen int) ([]string, error) {
+	vals, err := be.Values(context.Background(), minLen)
 	if err != nil {
 		return nil, err
 	}
@@ -145,11 +154,11 @@ func loadSecrets(cfg *dlpconfig.Config) ([]string, error) {
 	return kept, nil
 }
 
-// buildHandler assembles the route-multiplexing handler. Each route strips
+// BuildHandler assembles the route-multiplexing handler. Each route strips
 // its local prefix, forwards the remainder to the upstream (joining the
 // upstream's base path), and masks secrets in the request body. The secrets
 // set is shared across routes and may be hot-swapped at runtime.
-func buildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.Logger) http.Handler {
+func BuildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.Logger) http.Handler {
 	mux := http.NewServeMux()
 	for _, r := range cfg.Routes {
 		p := dlpproxy.New(dlpproxy.Options{
@@ -163,6 +172,11 @@ func buildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.
 		mux.Handle(r.Prefix+"/", stripped)
 	}
 	return mux
+}
+
+// buildHandler is kept as a thin alias for the in-package tests.
+func buildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.Logger) http.Handler {
+	return BuildHandler(cfg, secrets, logger)
 }
 
 // refreshLoop periodically reloads secrets from the configured source and

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
@@ -25,6 +26,9 @@ type Proxy struct {
 	rules     map[string]config.ProxyRule
 	allowlist []string
 	ca        *CA
+
+	muAddr   sync.RWMutex // guards listener (set by Start; read by Addr)
+	listener net.Listener
 }
 
 // resolveKey resolves a credential key using the standard resolution rule:
@@ -177,6 +181,9 @@ func (p *Proxy) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+	p.muAddr.Lock()
+	p.listener = listener
+	p.muAddr.Unlock()
 
 	server := &http.Server{Handler: handler}
 
@@ -189,6 +196,29 @@ func (p *Proxy) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// Addr returns the bound listener address (useful when listening on port 0).
+// It blocks until Start has bound the listener.
+func (p *Proxy) Addr() net.Addr {
+	for {
+		p.muAddr.RLock()
+		l := p.listener
+		p.muAddr.RUnlock()
+		if l != nil {
+			return l.Addr()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// UpdateRules atomically swaps the injection rules and allowlist (SIGHUP
+// hot reload). The existing rules stay in effect until the swap completes.
+func (p *Proxy) UpdateRules(rules map[string]config.ProxyRule, allowlist []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rules = rules
+	p.allowlist = allowlist
 }
 
 // handler returns the top-level http.Handler. Go's ServeMux routes CONNECT
@@ -312,6 +342,34 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 		fmt.Fprintf(os.Stderr, "trustless proxy error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// StartForward builds a Proxy from the given backend and config and serves
+// it on the injection port. Unlike start() it performs no flag parsing and
+// no SIGHUP loop — `trustless serve` owns signal handling and hot reload
+// centrally. When mitm is set, the shared MITM CA is loaded/generated (the
+// same path start() takes).
+func StartForward(ctx context.Context, be backend.Backend, cfg *config.Config, port int, mitm bool) (*Proxy, error) {
+	p := &Proxy{
+		backend:   be,
+		port:      port,
+		rules:     cfg.Proxy.Rules,
+		allowlist: cfg.Proxy.Allowlist,
+	}
+
+	if mitm {
+		caCfg := DefaultCAPaths()
+		ca, err := LoadOrGenerateCA(caCfg)
+		if err != nil {
+			return nil, fmt.Errorf("MITM CA setup failed: %w", err)
+		}
+		p.ca = ca
+	}
+
+	if err := p.Start(ctx); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 func printUsage() {

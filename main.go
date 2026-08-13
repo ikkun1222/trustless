@@ -16,6 +16,7 @@ import (
 	"github.com/ikkun1222/trustless/internal/proxy"
 	"github.com/ikkun1222/trustless/internal/run"
 	"github.com/ikkun1222/trustless/internal/secret"
+	"github.com/ikkun1222/trustless/internal/serve"
 	"github.com/ikkun1222/trustless/internal/setup"
 )
 
@@ -49,6 +50,15 @@ func main() {
 	// (secrets_source), so it skips the global backend initialization.
 	if cmd == "dlp" {
 		dlp.Run(args)
+		return
+	}
+
+	// serve runs both listeners (forward injection + DLP reverse) in one
+	// process. It builds its own shared backend from the trustless config,
+	// so it must run before the global backend initialization below (which
+	// would otherwise load a second, unused backend).
+	if cmd == "serve" {
+		serve.Run(args, cfg)
 		return
 	}
 
@@ -105,6 +115,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  trustless secret     Manage credentials (list, get, set)")
 	fmt.Fprintln(os.Stderr, "  trustless run        Run command with injected credentials")
 	fmt.Fprintln(os.Stderr, "  trustless proxy      Start credential injection proxy")
+	fmt.Fprintln(os.Stderr, "  trustless serve      Run injection + DLP proxies in one process")
 	fmt.Fprintln(os.Stderr, "  trustless config     Manage configuration")
 	fmt.Fprintln(os.Stderr, "  trustless version    Show version information")
 	fmt.Fprintln(os.Stderr, "  trustless completion   Generate shell completion script")
