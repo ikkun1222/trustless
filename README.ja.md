@@ -177,6 +177,22 @@ export HTTPS_PROXY=http://127.0.0.1:8080
 | `--unix-socket <path>` | Unixソケットで待受（ファイルパーミッション制御） |
 | `--mitm` | MITMモード有効化（HTTPSインターセプション） |
 
+### `trustless dlp` — 送信DLPリバースプロキシ（旧 dlp-proxy 統合）
+
+`trustless dlp` は旧 `github.com/ikkun1222/dlp-proxy` の後継サブコマンド。LLM API へのリクエスト本文を既知秘密（bitwarden / pass）と照合し `<redacted>` に置換する送信 DLP を提供する。
+
+```bash
+trustless dlp start -config ~/.config/dlp-proxy/config.json   # リバースプロキシ起動（既定 127.0.0.1:8787）
+trustless dlp scrub-db  <db-path> [--apply] [--backup]        # SQLite DB の秘密スキャン / スクラブ
+trustless dlp scrub-text <path>   [--apply]                   # テキスト / ディレクトリのスキャン / スクラブ
+```
+
+- **config スキーマは旧 dlp-proxy と同一（JSON）**: `listen` / `min_secret_len` / `secrets_source`（`pass` | `bitwarden`・既定 pass）/ `secrets_refresh_interval`（**必須**・例 `"10m"`）/ `routes`（prefix → upstream URL）
+- **秘密ロードは共通 backend 経由**（`backend.Values`）— 旧 bitwardenloader/passstore は廃止
+- **fail-closed**: 起動時の秘密ロード失敗は即終了（無防備で走らない）。リロード失敗時は既存セット維持 + WARN（fail-safe）
+- **ホットリロード**: `secrets_refresh_interval` の定期リロード + SIGHUP で即時リロード
+- 旧 dlp-proxy リポジトリは凍結（2026-08-13・`trustless dlp` に統合）
+
 ### `trustless setup` — 初回セットアップウィザード
 
 初回セットアップを自動化する対話型ウィザード:
