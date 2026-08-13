@@ -107,15 +107,16 @@ trustless の `run`（サブプロセス注入）は、エージェントと同�
 - プレースホルダ方式（`__KEY__`）は**廃止**（デッドコード回避・後方互換なし方針）
 - テスト11件・実機E2E（header/query注入・403）検証済み
 
-**dlp-proxy との連携（役割分担）:**
+**dlp-proxy との連携（役割分担・2026-08-13 更新）:**
 
 | 経路 | 担当 | 役割 |
 |---|---|---|
-| LLM API（merge/openrouter/sakura/google/vercel等） | dlp-proxy (127.0.0.1:8787) | 送信DLP（リクエストボディのシークレットマスク） |
-| 一般API（EDINET/e-Stat/xai等） | trustless proxy (127.0.0.1:8080) | 認証注入（ホストベース） |
+| LLM API（merge/openrouter/sakura/google/vercel等） | `trustless dlp start` (127.0.0.1:8787) | 送信DLP（リクエストボディのシークレットマスク） |
+| 一般API（EDINET/e-Stat/xai等） | `trustless proxy start` (127.0.0.1:8080) | 認証注入（ホストベース） |
 
-- 両者とも secrets_source=bitwarden・systemd常駐で統一
-- trustless proxy はフォワードプロキシ（HTTPS_PROXY設定）、dlp-proxy はリバースプロキシ
+- 両者とも secrets_source=bitwarden・systemd常駐で統一。**2026-08-13 に 1 バイナリ化**（旧 dlp-proxy リポジトリは凍結、`internal/dlp/` に統合・秘密ロードは共通 backend.Values）
+- 現在は 1 バイナリ・2 ユニット構成。**1 プロセス統合（`trustless serve`）は Phase 4 として計画済み・未実施**（承認ゲート付き。実装時は本ドキュメントも更新）
+- trustless proxy はフォワードプロキシ（HTTPS_PROXY設定）、dlp はリバースプロキシ
   （base_url差し替え）なので経路が重ならない
 - エージェント（Hermes/opencode）の設定: LLM系はdlp-proxy経由、それ以外のAPIは
   HTTPS_PROXY=trustless経由で素のリクエストを送る
