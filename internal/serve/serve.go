@@ -201,11 +201,14 @@ func reloadAll(dlpConfigPath string, dlpCfg *dlpconfig.Config, set *dlpproxy.Sec
 }
 
 // recoverMiddleware converts a panicking handler into a 500 response so a
-// single bad request cannot kill the whole process.
+// single bad request cannot kill the whole process. http.ErrAbortHandler
+// (client abort mid-stream) is intentionally NOT recovered: net/http treats
+// it as a silent abort and would otherwise produce log noise + a
+// superfluous WriteHeader here.
 func recoverMiddleware(next http.Handler, logger *log.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
-			if rec := recover(); rec != nil {
+			if rec := recover(); rec != nil && rec != http.ErrAbortHandler {
 				logger.Printf("panic in handler: %v", rec)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
