@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
@@ -25,6 +26,9 @@ type Proxy struct {
 	rules     map[string]config.ProxyRule
 	allowlist []string
 	ca        *CA
+
+	muAddr   sync.RWMutex // guards listener (set by Start; read by Addr)
+	listener net.Listener
 }
 
 // resolveKey resolves a credential key using the standard resolution rule:
@@ -171,24 +175,60 @@ func (p *Proxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) Start(ctx context.Context) error {
-	handler := p.handler()
+	if err := p.bindListener(); err != nil {
+		return err
+	}
+	return p.serve(ctx)
+}
 
+// bindListener binds the listen address and records the listener for Addr.
+func (p *Proxy) bindListener() error {
 	listener, err := p.listen()
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+	p.muAddr.Lock()
+	p.listener = listener
+	p.muAddr.Unlock()
+	return nil
+}
 
-	server := &http.Server{Handler: handler}
+// serve runs the HTTP server on the bound listener until ctx is cancelled.
+func (p *Proxy) serve(ctx context.Context) error {
+	server := &http.Server{Handler: p.handler()}
 
 	go func() {
 		<-ctx.Done()
 		server.Close()
 	}()
 
-	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+	if err := server.Serve(p.listener); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
+}
+
+// Addr returns the bound listener address (useful when listening on port 0).
+// It blocks until Start has bound the listener.
+func (p *Proxy) Addr() net.Addr {
+	for {
+		p.muAddr.RLock()
+		l := p.listener
+		p.muAddr.RUnlock()
+		if l != nil {
+			return l.Addr()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// UpdateRules atomically swaps the injection rules and allowlist (SIGHUP
+// hot reload). The existing rules stay in effect until the swap completes.
+func (p *Proxy) UpdateRules(rules map[string]config.ProxyRule, allowlist []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rules = rules
+	p.allowlist = allowlist
 }
 
 // handler returns the top-level http.Handler. Go's ServeMux routes CONNECT
@@ -312,6 +352,43 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 		fmt.Fprintf(os.Stderr, "trustless proxy error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// StartForward builds a Proxy from the given backend and config and serves
+// it on the injection port. Unlike start() it performs no flag parsing and
+// no SIGHUP loop — `trustless serve` owns signal handling and hot reload
+// centrally. When mitm is set, the shared MITM CA is loaded/generated (the
+// same path start() takes).
+func StartForward(ctx context.Context, be backend.Backend, cfg *config.Config, port int, mitm bool) (*Proxy, error) {
+	p := &Proxy{
+		backend:   be,
+		port:      port,
+		rules:     cfg.Proxy.Rules,
+		allowlist: cfg.Proxy.Allowlist,
+	}
+
+	if mitm {
+		caCfg := DefaultCAPaths()
+		ca, err := LoadOrGenerateCA(caCfg)
+		if err != nil {
+			return nil, fmt.Errorf("MITM CA setup failed: %w", err)
+		}
+		p.ca = ca
+	}
+
+	// Bind synchronously so callers fail fast (fail-closed): a port that
+	// cannot be bound aborts serve before any listener starts serving.
+	if err := p.bindListener(); err != nil {
+		return nil, err
+	}
+	// Serve in the background — StartForward must return so the caller's
+	// reload loop can run. Serve errors (beyond ctx cancellation) are logged.
+	go func() {
+		if err := p.serve(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "trustless proxy error: %v\n", err)
+		}
+	}()
+	return p, nil
 }
 
 func printUsage() {
