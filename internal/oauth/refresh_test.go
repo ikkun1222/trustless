@@ -102,6 +102,42 @@ func TestRefreshはexpiresInが無ければExpiresAtをゼロのままにする(
 	}
 }
 
+func TestRefreshは非200かつinvalidGrantボディでErrInvalidGrantを返す(t *testing.T) {
+	// 実測（2026-08-13）: Lark は refresh token 消費後 400 + {"code":20064,"error":"invalid_grant"} を返す。
+	// 非200パスでも ErrInvalidGrant にマップされ、status が reauth_required を出せること。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"code":20064,"error":"invalid_grant","error_description":"The refresh token has been revoked. Please note that a refresh token can only be used once."}`)
+	}))
+	t.Cleanup(srv.Close)
+	p := Provider{TokenURL: srv.URL, TokenRequestStyle: "json", Refreshable: true}
+	e := &OAuthEntry{Refresh: "refresh-1"}
+	err := Refresh(context.Background(), http.DefaultClient, p, e)
+	if err == nil {
+		t.Fatal("Refresh() error = nil, want ErrInvalidGrant")
+	}
+	if !errors.Is(err, ErrInvalidGrant) {
+		t.Errorf("Refresh() error = %v, want wrapped ErrInvalidGrant", err)
+	}
+}
+
+func TestRefreshは非200かつ通常エラーボディでErrInvalidGrantにしない(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":"server_error"}`)
+	}))
+	t.Cleanup(srv.Close)
+	p := Provider{TokenURL: srv.URL, Refreshable: true}
+	e := &OAuthEntry{Refresh: "refresh-1"}
+	err := Refresh(context.Background(), http.DefaultClient, p, e)
+	if err == nil {
+		t.Fatal("Refresh() error = nil, want non-nil")
+	}
+	if errors.Is(err, ErrInvalidGrant) {
+		t.Errorf("Refresh() error = %v, must NOT be ErrInvalidGrant", err)
+	}
+}
+
 func TestRefreshはinvalidGrantでErrInvalidGrantを返す(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"error":"invalid_grant","error_description":"bad token"}`)

@@ -76,6 +76,13 @@ func Refresh(ctx context.Context, client *http.Client, provider Provider, entry 
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
+		// エラーボディに invalid_grant が含まれる場合は ErrInvalidGrant に
+		// マップする（Lark は 400 + {"code":...,"error":"invalid_grant"} で返す。
+		// 実測 2026-08-13: refresh token は single-use のため消費後は必ずこれ）。
+		var tr tokenResponse
+		if err := json.Unmarshal(body, &tr); err == nil && tr.Error == "invalid_grant" {
+			return fmt.Errorf("oauth: token endpoint returned %s: %w", resp.Status, ErrInvalidGrant)
+		}
 		return fmt.Errorf("oauth: token endpoint returned %s", resp.Status)
 	}
 
