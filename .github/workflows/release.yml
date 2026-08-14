@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write   # cosign keyless signing (OIDC)
 
 jobs:
   release:
@@ -14,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: '1.26.6'
       - name: Build binaries
         run: |
           mkdir -p dist
@@ -23,6 +24,25 @@ jobs:
             GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -o "dist/trustless-$1-$2" .
           done
           sha256sum dist/* > dist/SHA256SUMS
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          path: dist/
+          format: spdx-json
+          output-file: dist/trustless.sbom.spdx.json
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign artifacts (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          for f in dist/trustless-* dist/SHA256SUMS dist/trustless.sbom.spdx.json; do
+            cosign sign-blob --yes --output-signature "$f.sig" --output-certificate "$f.pem" "$f"
+          done
+
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

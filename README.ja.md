@@ -54,6 +54,29 @@ cd trustless && go build -o trustless .
 go install github.com/ikkun1222/trustless@latest
 ```
 
+### リリース成果物の検証
+
+v0.5.1 以降、すべてのリリース成果物（バイナリ・SHA256SUMS・SBOM）は
+**cosign keyless**（OIDC・鍵管理不要）で署名されています。使用前に検証してください:
+
+```bash
+# 1. 成果物 + 署名・証明書をダウンロード
+gh release download v0.5.1 -p 'trustless-linux-amd64*' -p 'SHA256SUMS*'
+
+# 2. バイナリが公開チェックサムと一致するか確認
+sha256sum -c <(grep 'trustless-linux-amd64' SHA256SUMS)
+
+# 3. cosign 署名を検証（keyless: 署名者 = ikkun1222/trustless の GitHub Actions）
+cosign verify-blob --certificate trustless-linux-amd64.pem \
+  --signature trustless-linux-amd64.sig \
+  --certificate-identity-regexp '^https://github.com/ikkun1222/trustless/.github/workflows/release.yml@refs/tags/v' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  trustless-linux-amd64
+```
+
+各リリースには syft 生成の SPDX SBOM（`trustless.sbom.spdx.json`）も同梱され、
+サプライチェーン透過性を担保します。
+
 ### 前提条件
 
 - **Go 1.26+**（ビルド用）

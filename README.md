@@ -58,6 +58,29 @@ Or install directly:
 go install github.com/ikkun1222/trustless@latest
 ```
 
+### Verifying release artifacts
+
+Starting with v0.5.1, every release artifact (binaries, SHA256SUMS, SBOM) is
+signed with **cosign keyless** (OIDC, no key management). Verify before use:
+
+```bash
+# 1. Download the artifact + its signature and certificate
+gh release download v0.5.1 -p 'trustless-linux-amd64*' -p 'SHA256SUMS*'
+
+# 2. Verify the binary matches the published checksum
+sha256sum -c <(grep 'trustless-linux-amd64' SHA256SUMS)
+
+# 3. Verify the cosign signature (keyless: identity = GitHub Actions of ikkun1222/trustless)
+cosign verify-blob --certificate trustless-linux-amd64.pem \
+  --signature trustless-linux-amd64.sig \
+  --certificate-identity-regexp '^https://github.com/ikkun1222/trustless/.github/workflows/release.yml@refs/tags/v' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  trustless-linux-amd64
+```
+
+Each release also ships an SPDX SBOM (`trustless.sbom.spdx.json`) generated
+with syft for supply-chain transparency.
+
 ### Prerequisites
 
 - **Go 1.26+** for building from source
