@@ -49,8 +49,9 @@ The outbound DLP (`trustless dlp start` / `trustless serve`) redacts in two laye
 Config (dlp config JSON):
 - `rules_file`: external gitleaks-compatible rules TOML path (empty = bundled). `~` is expanded. Startup fails if missing/invalid (fail-closed).
 - `pattern_mode`: `"mask"` (default, redacts pattern matches) or `"log"` (detects only — body unchanged, audit event `dlp.redact` with `detail="patterns=hit&mode=log"`). Layer 1 always masks regardless of mode.
+- `pattern_disabled`: list of rule IDs to disable (e.g. `["generic-api-key"]`); unknown IDs fail the reload (fail-closed).
 
-Both `trustless dlp start` and `trustless serve` build the pattern set from the same config (`dlp.BuildPatternSet`). Changes to `rules_file` / `pattern_mode` require a process restart (config is read at startup; periodic/SIGHUP reload refreshes secrets only). The `scrub-db` / `scrub-text` commands remain known-value only.
+Both `trustless dlp start` and `trustless serve` build the pattern set from the same config (`dlp.BuildPatternSet`). In `trustless serve`, `pattern_mode` / `pattern_disabled` / `rules_file` changes are applied on every reload — SIGHUP (`kill -HUP $(pgrep -f 'trustless serve')`) or the periodic refresh — with atomic `PatternSet.Replace` and fail-safe semantics (failed reload keeps the previous state + WARN). Standalone `trustless dlp start` reads them at startup only. The `scrub-db` / `scrub-text` commands remain known-value only.
 
 ## Running Commands with Credentials
 
