@@ -17,6 +17,8 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+
+	"github.com/ikkun1222/trustless/internal/dlp/redact"
 )
 
 // Marker is the replacement text, matching the proxy's redact.Marker.
@@ -119,6 +121,32 @@ func listFTS(path string) ([]string, error) {
 		}
 	}
 	return fts, nil
+}
+
+// scanColumns returns the text-ish columns of a table: TEXT and untyped
+// (declared with no type, which SQLite treats as TEXT affinity) columns.
+// Used to decide which columns to scan in the row-based pattern path.
+func scanColumns(path, table string) ([]string, error) {
+	cols, err := listColumns(path, table)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		if isTextColumn(path, table, c) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// isTextColumn reports whether col in table is a text-like column.
+func isTextColumn(path, table, col string) bool {
+	out, err := sqlite(path, fmt.Sprintf("SELECT typeof(\"%s\") FROM \"%s\" LIMIT 1;", col, table))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(out) == "text"
 }
 
 // countHits counts rows in table.column containing any secret.
@@ -274,4 +302,153 @@ func scanFile(path string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%d", st.Size()), nil
+}
+
+// ScanDBPatterns is the pattern-layer dry-run: every text column is read
+// row by row and each value is scanned with the known-value layer and the
+// pattern layer (redact.ScanAll). When maskPatterns is false (pattern_mode:
+// "log") the pattern layer only counts detections; known-value hits are
+// still counted (and would be applied by ScrubDBPatterns). Read-only;
+// nothing is modified.
+func ScanDBPatterns(path string, secrets []string, minLen int, patterns *redact.PatternSet, maskPatterns bool) (*Report, error) {
+	rep := NewReport()
+	tables, err := listTables(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tables {
+		cols, err := scanColumns(path, t)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range cols {
+			n, err := scanColumnRows(path, t, c, secrets, minLen, patterns, maskPatterns, false)
+			if err != nil {
+				return nil, fmt.Errorf("%s.%s: %w", t, c, err)
+			}
+			if n > 0 {
+				rep.Tables[t+"."+c] = n
+			}
+		}
+	}
+	return rep, nil
+}
+
+// ScrubDBPatterns is the pattern-layer apply: every text column is read row
+// by row, each value is scanned with redact.ScanAll (or layer 1 only when
+// maskPatterns is false), and changed rows are written back with a single
+// UPDATE. FTS5 indexes are rebuilt and backup is honored, matching ScrubDB.
+func ScrubDBPatterns(path string, secrets []string, minLen int, patterns *redact.PatternSet, maskPatterns bool, backup bool) (*Report, error) {
+	if backup {
+		if err := copyFile(path, path+".bak"); err != nil {
+			return nil, fmt.Errorf("backup: %w", err)
+		}
+	}
+	rep := NewReport()
+	tables, err := listTables(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tables {
+		cols, err := scanColumns(path, t)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range cols {
+			n, err := scanColumnRows(path, t, c, secrets, minLen, patterns, maskPatterns, true)
+			if err != nil {
+				return nil, fmt.Errorf("%s.%s: %w", t, c, err)
+			}
+			if n > 0 {
+				rep.Tables[t+"."+c] = n
+			}
+		}
+	}
+
+	fts, err := listFTS(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range fts {
+		if _, err := sqlite(path, fmt.Sprintf("INSERT INTO \"%s\"(\"%s\") VALUES('rebuild');", f, f)); err != nil {
+			return nil, fmt.Errorf("fts rebuild %s: %w", f, err)
+		}
+		rep.FTSRebuilt = append(rep.FTSRebuilt, f)
+	}
+	sort.Strings(rep.FTSRebuilt)
+
+	// Purge physical remnants of scrubbed secrets, matching ScrubDB.
+	if rep.TotalHits() > 0 {
+		if _, err := sqlite(path, "VACUUM;"); err != nil {
+			return nil, fmt.Errorf("vacuum: %w", err)
+		}
+	}
+	return rep, nil
+}
+
+// scanColumnRows reads every value of one text column and returns how many
+// rows hit. When write is true, changed values are written back with a
+// single UPDATE per row. Row ids are hex-encoded so they never appear
+// unescaped in SQL; row values are matched in Go (redact.ScanAll).
+func scanColumnRows(path, table, col string, secrets []string, minLen int, patterns *redact.PatternSet, maskPatterns, write bool) (int, error) {
+	out, err := sqlite(path, fmt.Sprintf("SELECT rowid, hex(\"%s\") FROM \"%s\";", col, table))
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		rid, hexVal, ok := strings.Cut(line, "|")
+		if !ok {
+			continue
+		}
+		val, err := hex.DecodeString(hexVal)
+		if err != nil {
+			return n, fmt.Errorf("decode hex value: %w", err)
+		}
+		text := string(val)
+		if text == "" {
+			continue
+		}
+		changed := false
+		if maskPatterns {
+			var masked string
+			masked, changed = redact.ScanAll(text, secrets, minLen, patterns)
+			text = masked
+		} else {
+			// pattern_mode: "log" — layer 1 (known values) is applied;
+			// layer 2 counts detections only.
+			var masked string
+			masked, changed = redact.ScanAndRedact(text, secrets, minLen)
+			_, patHit := patterns.Scan(masked)
+			n += boolInt(patHit)
+			text = masked
+		}
+		if !changed {
+			continue
+		}
+		n++
+		if !write {
+			continue
+		}
+		var b strings.Builder
+		b.Grow(len(text) * 2)
+		for i := 0; i < len(text); i++ {
+			fmt.Fprintf(&b, "%02X", text[i])
+		}
+		q := fmt.Sprintf("UPDATE \"%s\" SET \"%s\" = X'%s' WHERE rowid = %s;", table, col, b.String(), rid)
+		if _, err := sqlite(path, q); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

@@ -32,7 +32,7 @@ func TestScrubTextFiles_FileAndDir(t *testing.T) {
 	}
 
 	// Scan: only f1 should hit.
-	rep, err := ScanTextFiles(dir, []string{secret}, 8)
+	rep, err := ScanTextFiles(dir, []string{secret}, 8, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestScrubTextFiles_FileAndDir(t *testing.T) {
 	}
 
 	// Scrub: f1 gets masked, f2/f3 untouched.
-	srep, err := ScrubTextFiles(dir, []string{secret}, 8)
+	srep, err := ScrubTextFiles(dir, []string{secret}, 8, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestScrubTextFiles_EmailExcluded(t *testing.T) {
 	if err := os.WriteFile(f, []byte("contact "+email), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rep, err := ScrubTextFiles(dir, []string{email}, 8)
+	rep, err := ScrubTextFiles(dir, []string{email}, 8, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,5 +103,94 @@ func TestIsTextFile_RotatedLogs(t *testing.T) {
 		if got != c.want {
 			t.Errorf("isTextFile(%q) = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// TestScanTextFiles_PatternHits verifies the dry-run pattern layer: a
+// github-pat shaped value (ghp_...) that is not a known secret is still
+// detected via the bundled rules.
+func TestScanTextFiles_PatternHits(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(f, []byte("token ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ end"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patterns := loadBundledPatterns(t)
+
+	// patterns == nil: no hit (value not in secrets).
+	rep, err := ScanTextFiles(dir, nil, 8, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.TotalHits() != 0 {
+		t.Fatalf("patterns nil hits = %d, want 0", rep.TotalHits())
+	}
+
+	// patterns != nil: detected.
+	rep2, err := ScanTextFiles(dir, nil, 8, patterns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.TotalHits() != 1 {
+		t.Fatalf("pattern hits = %d, want 1 (%+v)", rep2.TotalHits(), rep2.Hits)
+	}
+	if _, ok := rep2.Hits[f]; !ok {
+		t.Fatalf("hit file missing: %v", rep2.Hits)
+	}
+}
+
+// TestScrubTextFiles_PatternMask verifies --apply masks pattern matches.
+func TestScrubTextFiles_PatternMask(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(f, []byte("token ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ end"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patterns := loadBundledPatterns(t)
+
+	rep, err := ScrubTextFiles(dir, nil, 8, patterns, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.TotalHits() < 1 {
+		t.Fatalf("scrub hits = %d, want >= 1", rep.TotalHits())
+	}
+	data, _ := os.ReadFile(f)
+	if strings.Contains(string(data), "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ") {
+		t.Fatalf("pattern still present: %q", data)
+	}
+	if !strings.Contains(string(data), "<redacted>") {
+		t.Fatalf("marker missing: %q", data)
+	}
+}
+
+// TestScrubTextFiles_PatternLogMode verifies pattern_mode: "log": pattern
+// matches are counted but not replaced; known values are still masked.
+func TestScrubTextFiles_PatternLogMode(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "note.md")
+	secret := "sk-kno...7890"
+	content := "token " + openaiDummy(t) + " and " + secret
+	if err := os.WriteFile(f, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patterns := loadBundledPatterns(t)
+
+	rep, err := ScrubTextFiles(dir, []string{secret}, 8, patterns, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.TotalHits() < 2 {
+		t.Fatalf("hits = %d, want >= 2 (known value + pattern)", rep.TotalHits())
+	}
+	data, _ := os.ReadFile(f)
+	if !strings.Contains(string(data), openaiDummy(t)) {
+		t.Fatalf("pattern was masked in log mode: %q", data)
+	}
+	if strings.Contains(string(data), secret) {
+		t.Fatalf("known value not masked: %q", data)
+	}
+	if !strings.Contains(string(data), "<redacted>") {
+		t.Fatalf("marker missing: %q", data)
 	}
 }

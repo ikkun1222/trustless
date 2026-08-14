@@ -27,14 +27,25 @@ func NewTextReport() *TextReport {
 }
 
 // ScanTextFiles walks root (file or directory) and returns which files
-// contain any secret (length >= minLen). Email addresses are excluded.
-func ScanTextFiles(root string, secrets []string, minLen int) (*TextReport, error) {
+// contain any secret (length >= minLen) or pattern match. Email addresses
+// are excluded. patterns == nil means known values only (legacy behavior);
+// otherwise pattern hits are counted per file too.
+func ScanTextFiles(root string, secrets []string, minLen int, patterns *redact.PatternSet) (*TextReport, error) {
 	rep := NewTextReport()
 	err := walkTextFiles(root, func(path string, data []byte) error {
-		for _, s := range secrets {
-			if len(s) >= minLen && !redact.IsEmail(s) && strings.Contains(string(data), s) {
-				rep.Hits[path]++
+		text := string(data)
+		if patterns == nil {
+			for _, s := range secrets {
+				if len(s) >= minLen && !redact.IsEmail(s) && strings.Contains(text, s) {
+					rep.Hits[path]++
+				}
 			}
+			return nil
+		}
+		// Pattern path: reuse the same layer-1 + layer-2 detection as the
+		// proxy (ScanAll). A file counts once per detection layer that hit.
+		if _, changed := redact.ScanAll(text, secrets, minLen, patterns); changed {
+			rep.Hits[path]++
 		}
 		return nil
 	})
@@ -46,19 +57,35 @@ func ScanTextFiles(root string, secrets []string, minLen int) (*TextReport, erro
 
 // ScrubTextFiles walks root (file or directory) and replaces every
 // occurrence of any secret (length >= minLen) with <redacted>. Email
-// addresses are excluded. Returns a report of files scrubbed.
-func ScrubTextFiles(root string, secrets []string, minLen int) (*TextReport, error) {
+// addresses are excluded. When patterns != nil, pattern matches are also
+// replaced unless maskPatterns is false (pattern_mode: "log"), in which
+// case pattern hits are counted without changing the file. Returns a
+// report of files scrubbed.
+func ScrubTextFiles(root string, secrets []string, minLen int, patterns *redact.PatternSet, maskPatterns bool) (*TextReport, error) {
 	rep := NewTextReport()
 	err := walkTextFiles(root, func(path string, data []byte) error {
 		orig := string(data)
 		out := orig
-		for _, s := range secrets {
-			if len(s) >= minLen && !redact.IsEmail(s) {
-				out = strings.ReplaceAll(out, s, redact.Marker)
+		if patterns == nil {
+			for _, s := range secrets {
+				if len(s) >= minLen && !redact.IsEmail(s) {
+					out = strings.ReplaceAll(out, s, redact.Marker)
+				}
+			}
+		} else if maskPatterns {
+			out, _ = redact.ScanAll(out, secrets, minLen, patterns)
+		} else {
+			// pattern_mode: "log" — layer 1 (known values) is always
+			// applied; layer 2 is detection only.
+			out, _ = redact.ScanAndRedact(out, secrets, minLen)
+			if _, hit := patterns.Scan(out); hit {
+				rep.Hits[path]++
 			}
 		}
 		if out != orig {
-			rep.Hits[path] = countDiff(orig, out)
+			// log モードでパターン検出のカウントが既に加算されている場合があるため、
+			// 上書きではなく加算する（+=）。
+			rep.Hits[path] += countDiff(orig, out)
 			return os.WriteFile(path, []byte(out), 0o600)
 		}
 		return nil
