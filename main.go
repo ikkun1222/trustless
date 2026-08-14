@@ -97,7 +97,7 @@ func dispatch(cmd string, args []string, be backend.Backend, cfg *config.Config,
 	case "config":
 		runConfig(args, cfg, cfgPath)
 	case "version":
-		fmt.Println("trustless v0.1.0")
+		fmt.Println("trustless v0.5.0")
 	case "completion":
 		runCompletion(args)
 	case "doctor":
