@@ -67,7 +67,7 @@ func TestScrubTextFiles_FileAndDir(t *testing.T) {
 func TestScrubTextFiles_EmailExcluded(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "doc.md")
-	email := "takahashi.iria@gmail.com"
+	email := "someone@example.com"
 	if err := os.WriteFile(f, []byte("contact "+email), 0o600); err != nil {
 		t.Fatal(err)
 	}

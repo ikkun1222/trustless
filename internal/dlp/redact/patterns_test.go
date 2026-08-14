@@ -137,7 +137,7 @@ func TestScan_ShortJwtLikePasses(t *testing.T) {
 
 func TestScan_PlainProseUntouched(t *testing.T) {
 	prose := "The quick brown fox jumps over the lazy dog. Please send the report to " +
-		"takahashi.iria@gmail.com by Friday, and remember to water the plants."
+		"someone@example.com by Friday, and remember to water the plants."
 	out, changed := loadDefault(t).Scan(prose)
 	if changed {
 		t.Fatalf("prose must pass through unchanged, got %q", out)

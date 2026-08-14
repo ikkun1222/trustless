@@ -117,7 +117,7 @@ func TestScanAndRedact_EmailAddressNotMasked(t *testing.T) {
 	// xiaomi/credentials pass entry stores the account email on line 1,
 	// which caused <redacted> spam in every conversation containing a
 	// diff with the address.)
-	email := "takahashi.iria@gmail.com"
+	email := "someone@example.com"
 	out, changed := ScanAndRedact("send report to "+email+" now", []string{email}, 8)
 	if changed {
 		t.Fatalf("email address should NOT be masked, got %q", out)
@@ -130,7 +130,7 @@ func TestScanAndRedact_EmailAddressNotMasked(t *testing.T) {
 func TestScanAndRedact_MixedEmailAndSecret(t *testing.T) {
 	// A real secret alongside an email: only the secret is masked.
 	secret := "sk-real-secret-abcdef123456"
-	email := "takahashi.iria@gmail.com"
+	email := "someone@example.com"
 	out, changed := ScanAndRedact(
 		"user "+email+" key "+secret+" end", []string{secret, email}, 8)
 	if !changed {
