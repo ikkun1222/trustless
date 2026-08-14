@@ -23,7 +23,8 @@ jobs:
             set -- $target
             GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -o "dist/trustless-$1-$2" .
           done
-          sha256sum dist/* > dist/SHA256SUMS
+          # チェックサムはファイル名のみの形式（dist/ プレフィックスなし）で検証可能にする
+          (cd dist && sha256sum trustless-* > SHA256SUMS)
 
       - name: Generate SBOM (SPDX)
         uses: anchore/sbom-action@v0
