@@ -62,6 +62,9 @@ type Config struct {
 	// RulesFile は外部 gitleaks 互換ルールファイルのパス。空 = 同梱 rules.toml（go:embed）。
 	// パース時は検証しない（存在チェックは BuildPatternSet 側）。反映はプロセス再起動で行う。
 	RulesFile string `json:"rules_file"`
+	// PatternDisabled は無効化するパターンルールの id 一覧（ホットリロード対象）。
+	// 未知の id は BuildPatternSet で error（fail-closed）。空 = 全ルール有効。
+	PatternDisabled []string `json:"pattern_disabled"`
 	// PatternMode はパターン第2層の動作: "mask"（置換・デフォルト）/ "log"（検出のみ・本文不変）。
 	PatternMode PatternMode `json:"pattern_mode"`
 }
@@ -93,6 +96,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := validatePatternMode(cfg); err != nil {
+		return nil, err
+	}
+	if err := validatePatternDisabled(cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
@@ -155,5 +161,28 @@ func validatePatternMode(cfg *Config) error {
 	default:
 		return fmt.Errorf("config: unknown pattern_mode %q (want %q or %q)", cfg.PatternMode, PatternModeMask, PatternModeLog)
 	}
+	return nil
+}
+
+// validatePatternDisabled は pattern_disabled を正規化・検証する。
+// 空文字エントリは error、重複は排除する。未知 id の存在チェックは
+// BuildPatternSet（Filter）側で行う（fail-closed: タイポを検出）。
+func validatePatternDisabled(cfg *Config) error {
+	if len(cfg.PatternDisabled) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(cfg.PatternDisabled))
+	out := cfg.PatternDisabled[:0]
+	for _, id := range cfg.PatternDisabled {
+		if id == "" {
+			return fmt.Errorf("config: pattern_disabled contains empty rule id")
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	cfg.PatternDisabled = out
 	return nil
 }

@@ -252,3 +252,60 @@ func TestLoad_RulesFilePreserved(t *testing.T) {
 		t.Fatalf("RulesFile = %q, want /etc/gitleaks.toml", cfg.RulesFile)
 	}
 }
+
+func TestLoad_PatternDisabledPreserved(t *testing.T) {
+	path := writeConfig(t, `{
+  "secrets_refresh_interval": "10m",
+  "pattern_disabled": ["generic-api-key", "stripe-access-token"],
+  "routes": [{"prefix": "/v1", "url": "http://x"}]
+}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"generic-api-key", "stripe-access-token"}
+	if len(cfg.PatternDisabled) != 2 || cfg.PatternDisabled[0] != want[0] || cfg.PatternDisabled[1] != want[1] {
+		t.Fatalf("PatternDisabled = %v, want %v", cfg.PatternDisabled, want)
+	}
+}
+
+func TestLoad_PatternDisabledDedup(t *testing.T) {
+	path := writeConfig(t, `{
+  "secrets_refresh_interval": "10m",
+  "pattern_disabled": ["generic-api-key", "generic-api-key", "stripe-access-token"],
+  "routes": [{"prefix": "/v1", "url": "http://x"}]
+}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"generic-api-key", "stripe-access-token"}
+	if len(cfg.PatternDisabled) != 2 || cfg.PatternDisabled[0] != want[0] || cfg.PatternDisabled[1] != want[1] {
+		t.Fatalf("PatternDisabled = %v, want deduplicated %v", cfg.PatternDisabled, want)
+	}
+}
+
+func TestLoad_PatternDisabledEmptyEntryErrors(t *testing.T) {
+	path := writeConfig(t, `{
+  "secrets_refresh_interval": "10m",
+  "pattern_disabled": ["", "generic-api-key"],
+  "routes": [{"prefix": "/v1", "url": "http://x"}]
+}`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error for empty pattern_disabled entry")
+	}
+}
+
+func TestLoad_PatternDisabledAbsentIsEmpty(t *testing.T) {
+	path := writeConfig(t, `{
+  "secrets_refresh_interval": "10m",
+  "routes": [{"prefix": "/v1", "url": "http://x"}]
+}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.PatternDisabled) != 0 {
+		t.Fatalf("PatternDisabled = %v, want empty", cfg.PatternDisabled)
+	}
+}

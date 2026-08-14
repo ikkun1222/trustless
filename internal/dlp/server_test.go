@@ -59,7 +59,7 @@ func TestBuildHandler_E2E(t *testing.T) {
 			{Prefix: "/v1/openai", URL: upstream.URL + "/v1/openai"},
 		},
 	}
-	handler := buildHandler(cfg, proxy.NewSecrets([]string{secret}), loadTestPatterns(t), "", log.New(io.Discard, "", 0), audit.Off())
+	handler := buildHandler(cfg, proxy.NewSecrets([]string{secret}), loadTestPatterns(t), proxy.NewPatternMode(""), log.New(io.Discard, "", 0), audit.Off())
 	proxyServer := httptest.NewServer(handler)
 	t.Cleanup(proxyServer.Close)
 
@@ -110,7 +110,7 @@ func TestBuildHandler_RouteSelection(t *testing.T) {
 			{Prefix: "/v1/b", URL: upB.URL + "/v1/b"},
 		},
 	}
-	handler := buildHandler(cfg, proxy.NewSecrets(nil), loadTestPatterns(t), "", log.New(io.Discard, "", 0), audit.Off())
+	handler := buildHandler(cfg, proxy.NewSecrets(nil), loadTestPatterns(t), proxy.NewPatternMode(""), log.New(io.Discard, "", 0), audit.Off())
 	proxyServer := httptest.NewServer(handler)
 	t.Cleanup(proxyServer.Close)
 
@@ -281,5 +281,82 @@ func TestBuildPatternSet_MissingFile(t *testing.T) {
 	cfg := &config.Config{RulesFile: filepath.Join(t.TempDir(), "nope.toml")}
 	if _, err := BuildPatternSet(cfg); err == nil {
 		t.Fatal("expected error for missing rules_file")
+	}
+}
+
+// TestBuildPatternSet_DisabledApplies verifies that pattern_disabled removes
+// the listed rule ids (t.TempDir に書いたルールファイル + disabled 指定):
+// the disabled rule no longer detects while the kept rule still does.
+func TestBuildPatternSet_DisabledApplies(t *testing.T) {
+	rules := `
+[[rules]]
+id = "test-openai"
+description = "test rule"
+regex = '''sk-proj-[A-Za-z0-9]{40}'''
+keywords = ["sk-proj-"]
+entropy = 3.0
+[[rules]]
+id = "test-aws"
+description = "aws rule"
+regex = '''AKIA[A-Z0-9]{16}'''
+keywords = ["akia"]
+entropy = 3.0
+`
+	path := filepath.Join(t.TempDir(), "rules.toml")
+	if err := os.WriteFile(path, []byte(rules), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg := &config.Config{RulesFile: path, PatternDisabled: []string{"test-aws"}}
+	ps, err := BuildPatternSet(cfg)
+	if err != nil {
+		t.Fatalf("BuildPatternSet: %v", err)
+	}
+
+	const alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	patOpenAI := "sk-proj-" + alpha[:40]
+	if out, changed := ps.Scan("key " + patOpenAI + " end"); !changed || strings.Contains(out, patOpenAI) {
+		t.Fatalf("kept rule must still detect, got changed=%v out=%q", changed, out)
+	}
+	patAWS := "AKIA" + alpha[:16]
+	if out, changed := ps.Scan("key " + patAWS + " end"); changed || !strings.Contains(out, patAWS) {
+		t.Fatalf("disabled rule must not detect, got changed=%v out=%q", changed, out)
+	}
+}
+
+// TestBuildPatternSet_DisabledUnknownIDErrors verifies that an unknown
+// pattern_disabled id fails (fail-closed: typo detection).
+func TestBuildPatternSet_DisabledUnknownIDErrors(t *testing.T) {
+	rules := `
+[[rules]]
+id = "test-openai"
+regex = '''sk-proj-[A-Za-z0-9]{40}'''
+keywords = ["sk-proj-"]
+entropy = 3.0
+`
+	path := filepath.Join(t.TempDir(), "rules.toml")
+	if err := os.WriteFile(path, []byte(rules), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg := &config.Config{RulesFile: path, PatternDisabled: []string{"test-typo"}}
+	if _, err := BuildPatternSet(cfg); err == nil {
+		t.Fatal("expected error for unknown pattern_disabled id")
+	}
+}
+
+// TestBuildPatternSet_BundledDisabled verifies pattern_disabled works against
+// the bundled rules.toml too: disabling the openai rule stops detection.
+func TestBuildPatternSet_BundledDisabled(t *testing.T) {
+	cfg := &config.Config{PatternDisabled: []string{"openai-api-key"}}
+	ps, err := BuildPatternSet(cfg)
+	if err != nil {
+		t.Fatalf("BuildPatternSet: %v", err)
+	}
+	seg := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" +
+		"abcdefghijkl" // 62 + 12 = 74
+	dummy := "sk-proj-" + seg + "T3BlbkFJ" + seg
+	if out, changed := ps.Scan("key " + dummy + " end"); changed || !strings.Contains(out, dummy) {
+		t.Fatalf("disabled openai rule must not detect, got changed=%v out=%q", changed, out)
 	}
 }

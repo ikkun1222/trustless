@@ -23,6 +23,7 @@ import (
 	"github.com/ikkun1222/trustless/internal/dlp"
 	dlpconfig "github.com/ikkun1222/trustless/internal/dlp/config"
 	dlpproxy "github.com/ikkun1222/trustless/internal/dlp/proxy"
+	"github.com/ikkun1222/trustless/internal/dlp/redact"
 	"github.com/ikkun1222/trustless/internal/oauth"
 	"github.com/ikkun1222/trustless/internal/proxy"
 )
@@ -136,6 +137,7 @@ func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath s
 	if err != nil {
 		return fmt.Errorf("dlp patterns: %w", err) // fail-closed
 	}
+	patternMode := dlpproxy.NewPatternMode(string(dlpCfg.PatternMode))
 
 	secrets, err := dlp.LoadSecretsFromBackend(be, dlpCfg.MinSecretLen)
 	if err != nil {
@@ -144,7 +146,7 @@ func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath s
 	logger.Printf("loaded %d secrets (min length %d)", len(secrets), dlpCfg.MinSecretLen)
 	set := dlpproxy.NewSecrets(secrets)
 
-	dlpHandler := recoverMiddleware(dlp.BuildHandler(dlpCfg, set, patterns, string(dlpCfg.PatternMode), logger, sink), logger)
+	dlpHandler := recoverMiddleware(dlp.BuildHandler(dlpCfg, set, patterns, patternMode, logger, sink), logger)
 	dlpServer := &http.Server{Handler: dlpHandler}
 	dlpListener, err := net.Listen("tcp", scrubListen)
 	if err != nil {
@@ -180,19 +182,21 @@ func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath s
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			reloadAll(dlpConfigPath, dlpCfg, set, be, fwd, sink, logger)
+			reloadAll(dlpConfigPath, dlpCfg, set, be, fwd, patterns, patternMode, sink, logger)
 		case <-manual:
 			logger.Printf("manual reload requested (SIGHUP)")
-			reloadAll(dlpConfigPath, dlpCfg, set, be, fwd, sink, logger)
+			reloadAll(dlpConfigPath, dlpCfg, set, be, fwd, patterns, patternMode, sink, logger)
 		}
 	}
 }
 
 // reloadAll re-reads the trustless config (rules/allowlist) and the dlp
-// config, then reloads the shared backend and atomically replaces the
-// secrets set. On failure the previous state is kept and the problem is
-// logged as a warning (fail-safe).
-func reloadAll(dlpConfigPath string, dlpCfg *dlpconfig.Config, set *dlpproxy.Secrets, be backend.Backend, fwd *proxy.Proxy, sink audit.Sink, logger *log.Logger) {
+// config, then reloads the shared backend, atomically replaces the secrets
+// set, and rebuilds the pattern rule set + mode from the fresh dlp config.
+// On failure the previous state is kept and the problem is logged as a
+// warning (fail-safe). A pattern rebuild failure keeps the current patterns
+// but never rolls back an already-successful secrets reload.
+func reloadAll(dlpConfigPath string, dlpCfg *dlpconfig.Config, set *dlpproxy.Secrets, be backend.Backend, fwd *proxy.Proxy, patterns *redact.PatternSet, patternMode *dlpproxy.PatternMode, sink audit.Sink, logger *log.Logger) {
 	newTrustless, err := config.Load(config.DefaultConfigPath())
 	if err != nil {
 		logger.Printf("WARN: trustless config reload failed, keeping current rules: %v", err)
@@ -219,6 +223,17 @@ func reloadAll(dlpConfigPath string, dlpCfg *dlpconfig.Config, set *dlpproxy.Sec
 	}
 	set.Replace(fresh)
 	logger.Printf("reloaded %d secrets (min length %d)", len(fresh), newDlpCfg.MinSecretLen)
+
+	// パターン第2層も新 config から再構築してホットスワップする。
+	// 失敗時は旧パターン維持（fail-safe）— 既に成功した秘密リロードは巻き戻さない。
+	newPatterns, err := dlp.BuildPatternSet(newDlpCfg)
+	if err != nil {
+		logger.Printf("WARN: pattern rebuild failed, keeping current patterns: %v", err)
+	} else {
+		patterns.Replace(newPatterns)
+		patternMode.Set(string(newDlpCfg.PatternMode))
+		logger.Printf("reloaded patterns (%d rules, mode=%s)", newPatterns.Count(), patternMode.Get())
+	}
 
 	// logrotate 対応: file sink は SIGHUP/定期リロードで reopen する。
 	if r, ok := sink.(audit.Reopener); ok {

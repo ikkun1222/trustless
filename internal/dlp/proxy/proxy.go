@@ -11,11 +11,36 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/ikkun1222/trustless/internal/audit"
 	"github.com/ikkun1222/trustless/internal/dlp/redact"
 )
+
+// PatternMode はルート間で共有されるパターン第2層の動作モード。
+// ホットリロード（reloadAll からの Set）に対応するため atomic で読取る。
+type PatternMode struct {
+	v atomic.Value // string: "mask" | "log"
+}
+
+// NewPatternMode は初期値 m の PatternMode を返す。
+func NewPatternMode(m string) *PatternMode {
+	pm := &PatternMode{}
+	pm.v.Store(m)
+	return pm
+}
+
+// Get は現在のモード文字列（"mask" | "log"）を返す。
+func (m *PatternMode) Get() string {
+	s, _ := m.v.Load().(string)
+	return s
+}
+
+// Set はモードを原子的に更新する（ホットリロード）。
+func (m *PatternMode) Set(s string) {
+	m.v.Store(s)
+}
 
 // Options configures a Proxy.
 type Options struct {
@@ -33,7 +58,9 @@ type Options struct {
 	// PatternMode is the action applied to pattern matches: "mask" (the
 	// default; any other value also masks) or "log" (detection only — the
 	// body is left unchanged and a dlp.redact audit event is emitted).
-	PatternMode string
+	// The holder is shared across routes and may be hot-swapped at runtime
+	// via Set; nil defaults to NewPatternMode("mask").
+	PatternMode *PatternMode
 	// UpstreamURL is the base URL requests are forwarded to.
 	UpstreamURL string
 	// Logger receives scan diagnostics. Nil disables logging.
@@ -47,7 +74,7 @@ type Proxy struct {
 	secrets     *Secrets
 	minLen      int
 	patterns    *redact.PatternSet
-	patternMode string
+	patternMode *PatternMode
 	logger      *log.Logger
 	audit       audit.Sink
 }
@@ -71,6 +98,9 @@ func New(opts Options) http.Handler {
 	}
 	if p.secrets == nil {
 		p.secrets = NewSecrets(nil)
+	}
+	if p.patternMode == nil {
+		p.patternMode = NewPatternMode("mask")
 	}
 	rp := httputil.NewSingleHostReverseProxy(target)
 	originalDirector := rp.Director
@@ -104,7 +134,7 @@ func (p *Proxy) scanBody(req *http.Request) {
 	// either masks the result or only reports detections (log mode).
 	masked, changed := redact.ScanAndRedact(string(raw), p.secrets.Snapshot(), p.minLen)
 	if p.patterns != nil {
-		if p.patternMode == "log" {
+		if p.patternMode.Get() == "log" {
 			// 第1層のマスクは常に適用（changed は既に反映済み）。
 			// 第2層は検出のみ: 本文を変えず audit を発行する（段階ロールアウト用）。
 			if _, patHit := p.patterns.Scan(string(raw)); patHit {

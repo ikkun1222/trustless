@@ -185,9 +185,10 @@ mv audit.jsonl audit.jsonl.1 && kill -HUP $(pgrep -f 'trustless serve')
 |---|---|---|
 | `rules_file` | string | 外部 gitleaks 互換 rules TOML のパス。空 = 同梱。`~` 展開対応。存在しない/不正は**起動失敗**（fail-closed） |
 | `pattern_mode` | string | `"mask"`（デフォルト・置換）/ `"log"`（検出のみ・本文不変・audit `patterns=hit&mode=log`）。第1層は常にマスク |
+| `pattern_disabled` | string[] | 無効化するルール id 一覧（例: `["generic-api-key"]`）。未知 id は**起動/リロード失敗**（fail-closed・タイポ検出）。空 = 全ルール有効 |
 
 - 配線は `dlp.BuildPatternSet(cfg)` → `BuildHandler(cfg, secrets, patterns, patternMode, logger, sink)` の 1 点。`trustless dlp start` と `trustless serve` の両方が同じ経路（serve.go 実測 2026-08-14）
-- **変更反映はプロセス再起動**（config は起動時読込。定期/SIGHUP リロードは秘密のみ）
+- **ホットリロード（serve・2026-08-14）**: `trustless serve` は SIGHUP / 定期リロードのたびに config を再読込し、`PatternSet.Replace` + `PatternMode.Set` で原子的に反映（`reloaded patterns (N rules, mode=...)` ログ）。失敗時は WARN + 旧状態維持（fail-safe）。**スタンドアロン `trustless dlp start` は起動時読込のまま**（検証用）
 - `scrub-db` / `scrub-text` は既知値のみ（パターン層は対象外・YAGNI）
 
 ### 実測知見（2026-08-14・スモーク + 本番 log 投入）

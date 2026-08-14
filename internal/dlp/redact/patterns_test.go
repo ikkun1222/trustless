@@ -2,6 +2,7 @@ package redact
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -266,5 +267,208 @@ regex = "([unclosed"
 func TestLoadPatterns_EmptyRules(t *testing.T) {
 	if _, err := LoadPatterns([]byte("rules = []\n")); err == nil {
 		t.Fatal("expected error for zero rules")
+	}
+}
+
+// ---- hot-swap (Replace / Has / Filter) ----
+
+// testTwoRules returns a set with two distinct rules: "test-openai"
+// (sk-proj-…, keywords ["sk-proj-"]) and "test-aws" (AKIA…, keywords
+// ["akia"]). Helpers used by the swap tests below.
+func testTwoRules(t *testing.T) *PatternSet {
+	t.Helper()
+	ps, err := LoadPatterns([]byte(`
+[[rules]]
+id = "test-openai"
+description = "openai rule"
+regex = '''sk-proj-[A-Za-z0-9]{40}'''
+keywords = ["sk-proj-"]
+entropy = 3.0
+[[rules]]
+id = "test-aws"
+description = "aws rule"
+regex = '''AKIA[A-Z0-9]{16}'''
+keywords = ["akia"]
+entropy = 3.0
+`))
+	if err != nil {
+		t.Fatalf("LoadPatterns: %v", err)
+	}
+	return ps
+}
+
+// highEntropy62 returns the first n characters of a 62-char alphabet so the
+// match clears the entropy threshold.
+func highEntropy62(n int) string {
+	const alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	return alpha[:n]
+}
+
+// TestPatternSet_ReplaceSwapsRules verifies that Replace atomically swaps
+// the rule set: the same PatternSet instance starts detecting pattern A,
+// and after Replace detects pattern B instead.
+func TestPatternSet_ReplaceSwapsRules(t *testing.T) {
+	oldSet, err := LoadPatterns([]byte(`
+[[rules]]
+id = "old-rule"
+regex = '''sk-proj-[A-Za-z0-9]{40}'''
+keywords = ["sk-proj-"]
+entropy = 3.0
+`))
+	if err != nil {
+		t.Fatalf("LoadPatterns(old): %v", err)
+	}
+	newSet, err := LoadPatterns([]byte(`
+[[rules]]
+id = "new-rule"
+regex = '''ghp_[A-Za-z0-9]{36}'''
+keywords = ["ghp_"]
+entropy = 3.0
+`))
+	if err != nil {
+		t.Fatalf("LoadPatterns(new): %v", err)
+	}
+
+	patA := "sk-proj-" + highEntropy62(40)
+	patB := "ghp_" + highEntropy62(36)
+	shared := oldSet // リロードで中身が差し替わる共有インスタンス
+
+	if out, changed := shared.Scan("key " + patA + " end"); !changed || strings.Contains(out, patA) {
+		t.Fatalf("pre-swap: expected patA detected, got changed=%v out=%q", changed, out)
+	}
+	if out, changed := shared.Scan("key " + patB + " end"); changed || !strings.Contains(out, patB) {
+		t.Fatalf("pre-swap: patB must pass through, got changed=%v out=%q", changed, out)
+	}
+
+	shared.Replace(newSet)
+
+	if out, changed := shared.Scan("key " + patA + " end"); changed || !strings.Contains(out, patA) {
+		t.Fatalf("post-swap: patA must pass through, got changed=%v out=%q", changed, out)
+	}
+	if out, changed := shared.Scan("key " + patB + " end"); !changed || strings.Contains(out, patB) {
+		t.Fatalf("post-swap: expected patB detected, got changed=%v out=%q", changed, out)
+	}
+}
+
+// TestPatternSet_ReplaceConcurrentScan verifies that Scan racing Replace is
+// race-free: goroutines scan while the shared set is repeatedly swapped
+// between two rule sets. Run under -race.
+func TestPatternSet_ReplaceConcurrentScan(t *testing.T) {
+	oldSet := testTwoRules(t)
+	newSet, err := LoadPatterns([]byte(`
+[[rules]]
+id = "test-aws"
+regex = '''AKIA[A-Z0-9]{16}'''
+keywords = ["akia"]
+entropy = 3.0
+`))
+	if err != nil {
+		t.Fatalf("LoadPatterns(new): %v", err)
+	}
+
+	patOpenAI := "sk-proj-" + highEntropy62(40)
+	patAWS := "AKIA" + highEntropy62(16)
+	shared := oldSet
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_, _ = shared.Scan("key " + patOpenAI + " and " + patAWS + " end")
+				}
+			}
+		}()
+	}
+	for i := 0; i < 200; i++ {
+		shared.Replace(newSet)
+		shared.Replace(oldSet)
+	}
+	close(stop)
+	wg.Wait()
+}
+
+// TestPatternSet_Has verifies Has reports rule existence.
+func TestPatternSet_Has(t *testing.T) {
+	ps := testTwoRules(t)
+	if !ps.Has("test-openai") {
+		t.Fatal("expected Has(test-openai)=true")
+	}
+	if !ps.Has("test-aws") {
+		t.Fatal("expected Has(test-aws)=true")
+	}
+	if ps.Has("nope") {
+		t.Fatal("expected Has(nope)=false")
+	}
+	if ps.Has("") {
+		t.Fatal("expected Has(\"\")=false")
+	}
+}
+
+// TestPatternSet_FilterRemovesRules verifies Filter excludes the disabled ids
+// while keeping the rest, and that the returned set behaves accordingly.
+func TestPatternSet_FilterRemovesRules(t *testing.T) {
+	ps := testTwoRules(t)
+	filtered, err := ps.Filter([]string{"test-aws"})
+	if err != nil {
+		t.Fatalf("Filter: %v", err)
+	}
+	if filtered.Has("test-aws") {
+		t.Fatal("disabled rule must be excluded")
+	}
+	if !filtered.Has("test-openai") {
+		t.Fatal("non-disabled rule must remain")
+	}
+
+	patAWS := "AKIA" + highEntropy62(16)
+	if out, changed := filtered.Scan("key " + patAWS + " end"); changed || !strings.Contains(out, patAWS) {
+		t.Fatalf("disabled rule must not detect, got changed=%v out=%q", changed, out)
+	}
+	patOpenAI := "sk-proj-" + highEntropy62(40)
+	if out, changed := filtered.Scan("key " + patOpenAI + " end"); !changed || strings.Contains(out, patOpenAI) {
+		t.Fatalf("kept rule must still detect, got changed=%v out=%q", changed, out)
+	}
+	// 元のセットは不変（Filter は新しいセットを返す）。
+	if !ps.Has("test-aws") {
+		t.Fatal("Filter must not mutate the original set")
+	}
+}
+
+// TestPatternSet_FilterUnknownIDErrors verifies Filter fails on an unknown
+// id (fail-closed: typo detection).
+func TestPatternSet_FilterUnknownIDErrors(t *testing.T) {
+	ps := testTwoRules(t)
+	if _, err := ps.Filter([]string{"test-typo"}); err == nil {
+		t.Fatal("expected error for unknown rule id")
+	}
+}
+
+// TestPatternSet_FilterEmptyIDErrors verifies Filter rejects an empty id.
+func TestPatternSet_FilterEmptyIDErrors(t *testing.T) {
+	ps := testTwoRules(t)
+	if _, err := ps.Filter([]string{""}); err == nil {
+		t.Fatal("expected error for empty rule id")
+	}
+}
+
+// TestPatternSet_FilterDuplicateIDs verifies duplicate ids are harmless
+// (deduplicated) and do not error.
+func TestPatternSet_FilterDuplicateIDs(t *testing.T) {
+	ps := testTwoRules(t)
+	filtered, err := ps.Filter([]string{"test-aws", "test-aws"})
+	if err != nil {
+		t.Fatalf("Filter with duplicates: %v", err)
+	}
+	if filtered.Has("test-aws") {
+		t.Fatal("disabled rule must be excluded")
+	}
+	if !filtered.Has("test-openai") {
+		t.Fatal("non-disabled rule must remain")
 	}
 }
