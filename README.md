@@ -25,6 +25,33 @@ trustless:    agent → says "use GITHUB_TOKEN" → broker resolves → agent ge
               ↑  agent is an untrusted caller, broker is the authority
 ```
 
+### How it compares
+
+The "keep secrets away from AI agents" space has several tools. trustless is the
+only one that combines **subprocess injection with output sanitization**,
+**integrated DLP** (outbound request redaction), and **existing password-manager
+backends** (pass / Bitwarden) in a single zero-dependency binary.
+
+| | trustless | tene | vaulty | agent-secrets | secretless-ai | enject |
+|---|---|---|---|---|---|---|
+| Injection method | subprocess env + HTTP proxy | subprocess env | HTTP proxy + MCP | subprocess env (lease) | env + shell hook | subprocess env |
+| Existing backend (pass/Bitwarden) | ✅ | ❌ own vault | ❌ own vault | ❌ own vault | ❌ keychain/1Password | ❌ own vault |
+| Output sanitization | ✅ run + proxy | ❌ | ✅ | ❌ | ❌ | ❌ |
+| DLP (outbound redaction) | ✅ integrated | ❌ | partial (request) | ❌ | ❌ | ❌ |
+| OAuth token management | ✅ (google/lark, refresh) | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Audit log (structured) | ✅ | ❌ | ✅ file | ✅ append-only | ❌ | ❌ |
+| Agent skills bundled | ✅ 4 | ✅ context files | MCP only | ✅ skill | ✅ rules | ❌ |
+| Dependencies | **0 (single binary)** | Go static | Go static | Go static | npm/npx | Go static |
+| License | MIT | MIT | MIT | MIT | Apache-2.0 | MIT |
+
+*tene / vaulty / agent-secrets / secretless-ai / enject are compared as of Aug 2026.*
+
+The practical difference: tools like tene or enject solve "agent shouldn't read
+`.env`". trustless also solves "agent shouldn't *see* the key when it runs a
+command" (output sanitization) and "secrets shouldn't leak *out* of the machine
+when the agent calls an API" (DLP). If you already use pass or Bitwarden, there
+is no migration — trustless reads your existing store.
+
 ## Installation
 
 ### One-liner (Linux / macOS)
