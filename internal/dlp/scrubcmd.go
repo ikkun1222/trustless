@@ -6,6 +6,7 @@ import (
 	"log"
 
 	dlpconfig "github.com/ikkun1222/trustless/internal/dlp/config"
+	"github.com/ikkun1222/trustless/internal/dlp/redact"
 	"github.com/ikkun1222/trustless/internal/dlp/scrub"
 )
 
@@ -28,11 +29,16 @@ func runScrubE(args []string, logger *log.Logger) error {
 	}
 	dbPath := fs.Arg(0)
 
-	secrets, err := secretsFromConfig(*configPath, *minLen)
+	cfg, secrets, err := configAndSecrets(*configPath, *minLen)
 	if err != nil {
 		return err
 	}
-	return runScrubWithSecrets(dbPath, secrets, *minLen, *apply, *backup, logger)
+	patterns, err := BuildPatternSet(cfg)
+	if err != nil {
+		return err
+	}
+	maskPatterns := cfg.PatternMode != dlpconfig.PatternModeLog
+	return runScrubWithSecrets(dbPath, secrets, *minLen, *apply, *backup, patterns, maskPatterns, logger)
 }
 
 // runScrubTextE implements `trustless dlp scrub-text <file-or-dir>
@@ -52,19 +58,25 @@ func runScrubTextE(args []string, logger *log.Logger) error {
 	}
 	root := fs.Arg(0)
 
-	secrets, err := secretsFromConfig(*configPath, *minLen)
+	cfg, secrets, err := configAndSecrets(*configPath, *minLen)
 	if err != nil {
 		return err
 	}
-	return runScrubTextWithSecrets(root, secrets, *minLen, *apply, logger)
+	patterns, err := BuildPatternSet(cfg)
+	if err != nil {
+		return err
+	}
+	maskPatterns := cfg.PatternMode != dlpconfig.PatternModeLog
+	return runScrubTextWithSecrets(root, secrets, *minLen, *apply, patterns, maskPatterns, logger)
 }
 
 // runScrubTextWithSecrets is the pure core of scrub-text: scans or scrubs
 // root with the given secrets. Used by runScrubTextE (real backend) and
-// tests (injected values).
-func runScrubTextWithSecrets(root string, secrets []string, minLen int, apply bool, logger *log.Logger) error {
+// tests (injected values). patterns == nil means known values only (legacy);
+// maskPatterns == false applies pattern_mode: "log" (detect, don't mask).
+func runScrubTextWithSecrets(root string, secrets []string, minLen int, apply bool, patterns *redact.PatternSet, maskPatterns bool, logger *log.Logger) error {
 	if apply {
-		rep, err := scrub.ScrubTextFiles(root, secrets, minLen)
+		rep, err := scrub.ScrubTextFiles(root, secrets, minLen, patterns, maskPatterns)
 		if err != nil {
 			return fmt.Errorf("scrub: %w", err)
 		}
@@ -76,7 +88,7 @@ func runScrubTextWithSecrets(root string, secrets []string, minLen int, apply bo
 		return nil
 	}
 
-	rep, err := scrub.ScanTextFiles(root, secrets, minLen)
+	rep, err := scrub.ScanTextFiles(root, secrets, minLen, patterns)
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
@@ -90,11 +102,24 @@ func runScrubTextWithSecrets(root string, secrets []string, minLen int, apply bo
 
 // runScrubWithSecrets is the pure core: scrubs or scans dbPath with the
 // given secrets. Used by runScrubE (real backend) and tests (injected
-// values).
-func runScrubWithSecrets(dbPath string, secrets []string, minLen int, apply, backup bool, logger *log.Logger) error {
+// values). patterns == nil means known values only (legacy); maskPatterns
+// == false applies pattern_mode: "log" (detect, don't mask).
+func runScrubWithSecrets(dbPath string, secrets []string, minLen int, apply, backup bool, patterns *redact.PatternSet, maskPatterns bool, logger *log.Logger) error {
 	logger.Printf("loaded %d secrets (min length %d)", len(secrets), minLen)
 
 	if apply {
+		if patterns != nil {
+			rep, err := scrub.ScrubDBPatterns(dbPath, secrets, minLen, patterns, maskPatterns, backup)
+			if err != nil {
+				return fmt.Errorf("scrub: %w", err)
+			}
+			logger.Printf("SCRUBBED %s: %d hits in %d columns; FTS rebuilt: %v",
+				dbPath, rep.TotalHits(), len(rep.Tables), rep.FTSRebuilt)
+			for k, v := range rep.Tables {
+				logger.Printf("  %s: %d", k, v)
+			}
+			return nil
+		}
 		rep, err := scrub.ScrubDB(dbPath, secrets, minLen, backup)
 		if err != nil {
 			return fmt.Errorf("scrub: %w", err)
@@ -107,6 +132,18 @@ func runScrubWithSecrets(dbPath string, secrets []string, minLen int, apply, bac
 		return nil
 	}
 
+	if patterns != nil {
+		rep, err := scrub.ScanDBPatterns(dbPath, secrets, minLen, patterns, maskPatterns)
+		if err != nil {
+			return fmt.Errorf("scan: %w", err)
+		}
+		logger.Printf("DRY-RUN %s: %d hits in %d columns (use --apply to scrub)",
+			dbPath, rep.TotalHits(), len(rep.Tables))
+		for k, v := range rep.Tables {
+			logger.Printf("  %s: %d", k, v)
+		}
+		return nil
+	}
 	rep, err := scrub.ScanDB(dbPath, secrets, minLen)
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
@@ -119,22 +156,23 @@ func runScrubWithSecrets(dbPath string, secrets []string, minLen int, apply, bac
 	return nil
 }
 
-// secretsFromConfig loads the config file and resolves the secret list
+// configAndSecrets loads the config file and resolves the secret list
 // through the same backend selection as the proxy (loadSecrets), so scrub
-// commands follow the configured secrets_source.
-func secretsFromConfig(configPath string, minLen int) ([]string, error) {
+// commands follow the configured secrets_source. The cfg is returned so the
+// caller can also build the pattern set and read pattern_mode.
+func configAndSecrets(configPath string, minLen int) (*dlpconfig.Config, []string, error) {
 	cfg, err := dlpconfig.Load(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+		return nil, nil, fmt.Errorf("config: %w", err)
 	}
 	secrets, err := loadSecrets(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", cfg.SecretsSource, err)
+		return nil, nil, fmt.Errorf("%s: %w", cfg.SecretsSource, err)
 	}
 	if minLen != cfg.MinSecretLen {
 		secrets = filterMinLen(secrets, minLen)
 	}
-	return secrets, nil
+	return cfg, secrets, nil
 }
 
 // filterMinLen drops secrets shorter than minLen.

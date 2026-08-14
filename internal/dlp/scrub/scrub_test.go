@@ -3,10 +3,13 @@ package scrub
 import (
 	"bytes"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/ikkun1222/trustless/internal/dlp/redact"
 )
 
 // newTestDB creates a temp SQLite DB with a messages-like table (content
@@ -16,14 +19,15 @@ func newTestDB(t *testing.T) string {
 	dir := t.TempDir()
 	path := dir + "/test.db"
 
-	sql := `
+	sql := fmt.Sprintf(`
 CREATE TABLE messages (id INTEGER PRIMARY KEY, content TEXT, role TEXT);
 INSERT INTO messages (content, role) VALUES ('my key is sk-supersecret1234567890 ok', 'user');
 INSERT INTO messages (content, role) VALUES ('hello world', 'user');
 INSERT INTO messages (content, role) VALUES ('token xoxb-1234567890-abcdefghij end', 'user');
+INSERT INTO messages (content, role) VALUES ('oai %s end', 'user');
 CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='id');
 INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
-`
+`, openaiDummy(t))
 	if err := exec.Command("sqlite3", path, sql).Run(); err != nil {
 		t.Fatalf("create test db: %v", err)
 	}
@@ -249,5 +253,165 @@ INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
 	}
 	if rep2.TotalHits() != 0 {
 		t.Fatalf("secrets remain after scrub: %+v", rep2)
+	}
+}
+
+// loadBundledPatterns returns the bundled pattern set for pattern-layer tests.
+func loadBundledPatterns(t *testing.T) *redact.PatternSet {
+	t.Helper()
+	ps, err := redact.DefaultPatterns()
+	if err != nil {
+		t.Fatalf("DefaultPatterns: %v", err)
+	}
+	return ps
+}
+
+// openaiDummy は bundled の openai-api-key ルール（sk-proj-{58}T3BlbkFJ{58}・entropy 3）に
+// 一致するダミーキー。固定シードで決定論的に生成する（パターン層テスト用）。
+func openaiDummy(t *testing.T) string {
+	t.Helper()
+	r := rand.New(rand.NewSource(42))
+	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	rnd := func(n int) string {
+		b := make([]byte, n)
+		for i := range b {
+			b[i] = chars[r.Intn(len(chars))]
+		}
+		return string(b)
+	}
+	return "sk-proj-" + rnd(58) + "T3BlbkFJ" + rnd(58)
+}
+
+// TestScanDBPatterns_DetectsPatternHit verifies the pattern dry-run detects
+// a slack-bot-token shaped value that is not a known secret.
+func TestScanDBPatterns_DetectsPatternHit(t *testing.T) {
+	path := newTestDB(t)
+	patterns := loadBundledPatterns(t)
+
+	rep, err := ScanDBPatterns(path, nil, 8, patterns, true)
+	if err != nil {
+		t.Fatalf("ScanDBPatterns: %v", err)
+	}
+	if rep.TotalHits() != 1 {
+		t.Fatalf("TotalHits = %d, want 1 (got %+v)", rep.TotalHits(), rep)
+	}
+	if mc := rep.TableHits("messages", "content"); mc != 1 {
+		t.Fatalf("messages.content hits = %d, want 1", mc)
+	}
+}
+
+// TestScrubDBPatterns_MasksPatternAndRebuildsFTS verifies --apply masks
+// pattern matches and rebuilds the FTS index.
+func TestScrubDBPatterns_MasksPatternAndRebuildsFTS(t *testing.T) {
+	path := newTestDB(t)
+	patterns := loadBundledPatterns(t)
+
+	rep, err := ScrubDBPatterns(path, nil, 8, patterns, true, false)
+	if err != nil {
+		t.Fatalf("ScrubDBPatterns: %v", err)
+	}
+	if rep.TotalHits() != 1 {
+		t.Fatalf("TotalHits = %d, want 1", rep.TotalHits())
+	}
+	if len(rep.FTSRebuilt) != 1 {
+		t.Fatalf("FTSRebuilt = %v, want 1 table", rep.FTSRebuilt)
+	}
+
+	// The pattern must be gone from the base table.
+	dummy := openaiDummy(t)
+	out, err := exec.Command("sqlite3", path,
+		"SELECT content FROM messages WHERE id=4").Output()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(out), dummy) {
+		t.Fatalf("pattern remains after scrub: %q", out)
+	}
+	if !strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marker missing after scrub: %q", out)
+	}
+
+	// FTS rebuilt: the original pattern value must not be served by the index.
+	out2, err := exec.Command("sqlite3", path,
+		"SELECT content FROM messages_fts").Output()
+	if err != nil {
+		t.Fatalf("fts query: %v", err)
+	}
+	if strings.Contains(string(out2), dummy) {
+		t.Fatalf("FTS still contains pattern: %q", out2)
+	}
+}
+
+// TestScrubDBPatterns_LogModeCountsWithoutMasking verifies pattern_mode:
+// "log": pattern hits are counted but the value stays; known values are
+// still masked.
+func TestScrubDBPatterns_LogModeCountsWithoutMasking(t *testing.T) {
+	path := newTestDB(t)
+	patterns := loadBundledPatterns(t)
+	secret := "sk-supersecret1234567890"
+
+	rep, err := ScrubDBPatterns(path, []string{secret}, 8, patterns, false, false)
+	if err != nil {
+		t.Fatalf("ScrubDBPatterns: %v", err)
+	}
+	if rep.TotalHits() != 2 {
+		t.Fatalf("TotalHits = %d, want 2 (known value + pattern) tables=%+v", rep.TotalHits(), rep.Tables)
+	}
+
+	// Known value masked; pattern left intact.
+	out, err := exec.Command("sqlite3", path,
+		"SELECT content FROM messages WHERE id=1").Output()
+	if err != nil {
+		t.Fatalf("read id=1: %v", err)
+	}
+	if strings.Contains(string(out), secret) {
+		t.Fatalf("known value not masked in log mode: %q", out)
+	}
+	out2, err := exec.Command("sqlite3", path,
+		"SELECT content FROM messages WHERE id=4").Output()
+	if err != nil {
+		t.Fatalf("read id=4: %v", err)
+	}
+	if !strings.Contains(string(out2), openaiDummy(t)) {
+		t.Fatalf("pattern was masked in log mode: %q", out2)
+	}
+}
+
+// TestScrubDBPatterns_Backup verifies the .bak copy is created.
+func TestScrubDBPatterns_Backup(t *testing.T) {
+	path := newTestDB(t)
+	patterns := loadBundledPatterns(t)
+
+	if _, err := ScrubDBPatterns(path, nil, 8, patterns, true, true); err != nil {
+		t.Fatalf("ScrubDBPatterns with backup: %v", err)
+	}
+	if _, err := scanFile(path + ".bak"); err != nil {
+		t.Fatalf("backup file not created/readable: %v", err)
+	}
+}
+
+// TestScrubDBPatterns_NonTextColumnSkipped verifies numeric columns are not
+// scanned by the row-based path.
+func TestScrubDBPatterns_NonTextColumnSkipped(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/test.db"
+	sql := fmt.Sprintf(`
+CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, content TEXT);
+INSERT INTO t (n, content) VALUES (12345, 'oai %s end');
+`, openaiDummy(t))
+	if err := exec.Command("sqlite3", path, sql).Run(); err != nil {
+		t.Fatalf("create test db: %v", err)
+	}
+	patterns := loadBundledPatterns(t)
+
+	rep, err := ScanDBPatterns(path, nil, 8, patterns, true)
+	if err != nil {
+		t.Fatalf("ScanDBPatterns: %v", err)
+	}
+	if rep.TotalHits() != 1 {
+		t.Fatalf("TotalHits = %d, want 1 (only content scanned)", rep.TotalHits())
+	}
+	if rep.TableHits("t", "n") != 0 {
+		t.Fatalf("numeric column was scanned: %+v", rep.Tables)
 	}
 }
