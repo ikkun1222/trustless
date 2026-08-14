@@ -38,6 +38,16 @@ type Route struct {
 	URL    string `json:"url"`
 }
 
+// PatternMode はパターン第2層の動作モード。
+type PatternMode string
+
+const (
+	// PatternModeMask はパターン一致を置換する（デフォルト）。
+	PatternModeMask PatternMode = "mask"
+	// PatternModeLog は検出のみ・本文は不変（段階ロールアウト用）。
+	PatternModeLog PatternMode = "log"
+)
+
 // Config is the dlp-proxy configuration.
 type Config struct {
 	Listen        string        `json:"listen"`
@@ -49,6 +59,11 @@ type Config struct {
 	SecretsRefreshInterval string        `json:"secrets_refresh_interval"`
 	SecretsRefresh         time.Duration `json:"-"`
 	Routes                 []Route       `json:"routes"`
+	// RulesFile は外部 gitleaks 互換ルールファイルのパス。空 = 同梱 rules.toml（go:embed）。
+	// パース時は検証しない（存在チェックは BuildPatternSet 側）。反映はプロセス再起動で行う。
+	RulesFile string `json:"rules_file"`
+	// PatternMode はパターン第2層の動作: "mask"（置換・デフォルト）/ "log"（検出のみ・本文不変）。
+	PatternMode PatternMode `json:"pattern_mode"`
 }
 
 // Load reads and validates the config file at path.
@@ -68,42 +83,77 @@ func Load(path string) (*Config, error) {
 	if cfg.MinSecretLen == 0 {
 		cfg.MinSecretLen = DefaultMinSecretLen
 	}
+	if err := validateSecretsSource(cfg); err != nil {
+		return nil, err
+	}
+	if err := validateRoutes(cfg); err != nil {
+		return nil, err
+	}
+	if err := validateRefreshInterval(cfg); err != nil {
+		return nil, err
+	}
+	if err := validatePatternMode(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func validateSecretsSource(cfg *Config) error {
 	switch cfg.SecretsSource {
 	case "", SecretsPass:
 		cfg.SecretsSource = DefaultSecretsSource
 	case SecretsBitwarden:
 		// ok
 	default:
-		return nil, fmt.Errorf("config: unknown secrets_source %q (want %q or %q)", cfg.SecretsSource, SecretsPass, SecretsBitwarden)
+		return fmt.Errorf("config: unknown secrets_source %q (want %q or %q)", cfg.SecretsSource, SecretsPass, SecretsBitwarden)
 	}
-	if len(cfg.Routes) == 0 {
-		return nil, fmt.Errorf("config: at least one route required")
-	}
+	return nil
+}
 
+func validateRoutes(cfg *Config) error {
+	if len(cfg.Routes) == 0 {
+		return fmt.Errorf("config: at least one route required")
+	}
 	seen := make(map[string]bool, len(cfg.Routes))
 	for _, r := range cfg.Routes {
 		if r.Prefix == "" {
-			return nil, fmt.Errorf("config: route prefix required")
+			return fmt.Errorf("config: route prefix required")
 		}
 		if r.URL == "" {
-			return nil, fmt.Errorf("config: route %q missing url", r.Prefix)
+			return fmt.Errorf("config: route %q missing url", r.Prefix)
 		}
 		if seen[r.Prefix] {
-			return nil, fmt.Errorf("config: duplicate route prefix %q", r.Prefix)
+			return fmt.Errorf("config: duplicate route prefix %q", r.Prefix)
 		}
 		seen[r.Prefix] = true
 	}
+	return nil
+}
 
+func validateRefreshInterval(cfg *Config) error {
 	if cfg.SecretsRefreshInterval == "" {
-		return nil, fmt.Errorf("config: secrets_refresh_interval is required (e.g. \"10m\")")
+		return fmt.Errorf("config: secrets_refresh_interval is required (e.g. \"10m\")")
 	}
 	d, err := time.ParseDuration(cfg.SecretsRefreshInterval)
 	if err != nil {
-		return nil, fmt.Errorf("config: invalid secrets_refresh_interval %q: %w", cfg.SecretsRefreshInterval, err)
+		return fmt.Errorf("config: invalid secrets_refresh_interval %q: %w", cfg.SecretsRefreshInterval, err)
 	}
 	if d <= 0 {
-		return nil, fmt.Errorf("config: secrets_refresh_interval must be positive (e.g. \"10m\")")
+		return fmt.Errorf("config: secrets_refresh_interval must be positive (e.g. \"10m\")")
 	}
 	cfg.SecretsRefresh = d
-	return cfg, nil
+	return nil
+}
+
+// validatePatternMode は PatternMode を正規化・検証する。空は "mask" に正規化。
+func validatePatternMode(cfg *Config) error {
+	switch cfg.PatternMode {
+	case "", PatternModeMask:
+		cfg.PatternMode = PatternModeMask
+	case PatternModeLog:
+		// ok
+	default:
+		return fmt.Errorf("config: unknown pattern_mode %q (want %q or %q)", cfg.PatternMode, PatternModeMask, PatternModeLog)
+	}
+	return nil
 }

@@ -7,9 +7,12 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ikkun1222/trustless/internal/audit"
+	"github.com/ikkun1222/trustless/internal/dlp/redact"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +21,17 @@ import (
 	"github.com/ikkun1222/trustless/internal/dlp/config"
 	"github.com/ikkun1222/trustless/internal/dlp/proxy"
 )
+
+// loadTestPatterns returns the bundled pattern set, failing the test if the
+// embedded rules.toml cannot be loaded.
+func loadTestPatterns(t *testing.T) *redact.PatternSet {
+	t.Helper()
+	ps, err := redact.DefaultPatterns()
+	if err != nil {
+		t.Fatalf("DefaultPatterns: %v", err)
+	}
+	return ps
+}
 
 // TestBuildHandler_E2E wires a config with a route through buildHandler and
 // verifies end-to-end: prefix stripping, upstream path joining, secret
@@ -45,7 +59,7 @@ func TestBuildHandler_E2E(t *testing.T) {
 			{Prefix: "/v1/openai", URL: upstream.URL + "/v1/openai"},
 		},
 	}
-	handler := buildHandler(cfg, proxy.NewSecrets([]string{secret}), log.New(io.Discard, "", 0), audit.Off())
+	handler := buildHandler(cfg, proxy.NewSecrets([]string{secret}), loadTestPatterns(t), "", log.New(io.Discard, "", 0), audit.Off())
 	proxyServer := httptest.NewServer(handler)
 	t.Cleanup(proxyServer.Close)
 
@@ -96,7 +110,7 @@ func TestBuildHandler_RouteSelection(t *testing.T) {
 			{Prefix: "/v1/b", URL: upB.URL + "/v1/b"},
 		},
 	}
-	handler := buildHandler(cfg, proxy.NewSecrets(nil), log.New(io.Discard, "", 0), audit.Off())
+	handler := buildHandler(cfg, proxy.NewSecrets(nil), loadTestPatterns(t), "", log.New(io.Discard, "", 0), audit.Off())
 	proxyServer := httptest.NewServer(handler)
 	t.Cleanup(proxyServer.Close)
 
@@ -211,5 +225,61 @@ func TestRefreshLoop_ManualReload(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "manual reload requested") {
 		t.Fatalf("expected manual reload log, got: %s", buf.String())
+	}
+}
+
+// TestBuildPatternSet_Bundled verifies that an empty rules_file selects the
+// bundled rules.toml (40 gitleaks-compatible rules).
+func TestBuildPatternSet_Bundled(t *testing.T) {
+	ps, err := BuildPatternSet(&config.Config{})
+	if err != nil {
+		t.Fatalf("BuildPatternSet: %v", err)
+	}
+	if ps == nil {
+		t.Fatal("expected non-nil pattern set")
+	}
+	// The bundled set detects an OpenAI project key (sk-proj-…).
+	seg := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" +
+		"abcdefghijkl" // 62 + 12 = 74
+	dummy := "sk-proj-" + seg + "T3BlbkFJ" + seg
+	if out, changed := ps.Scan("key " + dummy + " end"); !changed || strings.Contains(out, dummy) {
+		t.Fatalf("bundled set must detect pattern, got changed=%v out=%q", changed, out)
+	}
+}
+
+// TestBuildPatternSet_ExternalFile verifies that a rules_file pointing at a
+// gitleaks-compatible TOML (written under t.TempDir) is loaded.
+func TestBuildPatternSet_ExternalFile(t *testing.T) {
+	rules := `
+[[rules]]
+id = "test-openai"
+description = "test rule"
+regex = '''sk-proj-[A-Za-z0-9]{40}'''
+keywords = ["sk-proj-"]
+entropy = 3.0
+`
+	path := filepath.Join(t.TempDir(), "rules.toml")
+	if err := os.WriteFile(path, []byte(rules), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	ps, err := BuildPatternSet(&config.Config{RulesFile: path})
+	if err != nil {
+		t.Fatalf("BuildPatternSet: %v", err)
+	}
+	seg := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" +
+		"abcdefghijkl" // 62 + 12 = 74
+	dummy := "sk-proj-" + seg[:40]
+	if out, changed := ps.Scan("key " + dummy + " end"); !changed || strings.Contains(out, dummy) {
+		t.Fatalf("external set must detect pattern, got changed=%v out=%q", changed, out)
+	}
+}
+
+// TestBuildPatternSet_MissingFile verifies that a nonexistent rules_file is
+// an error (fail-closed).
+func TestBuildPatternSet_MissingFile(t *testing.T) {
+	cfg := &config.Config{RulesFile: filepath.Join(t.TempDir(), "nope.toml")}
+	if _, err := BuildPatternSet(cfg); err == nil {
+		t.Fatal("expected error for missing rules_file")
 	}
 }

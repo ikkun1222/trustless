@@ -31,8 +31,8 @@ type Options struct {
 	// legacy behavior: known-value substring scanning only.
 	Patterns *redact.PatternSet
 	// PatternMode is the action applied to pattern matches: "mask" (the
-	// default; anything else also masks for now) or, from S3 on,
-	// "block". Reserved for the config wiring landing in the next step.
+	// default; any other value also masks) or "log" (detection only — the
+	// body is left unchanged and a dlp.redact audit event is emitted).
 	PatternMode string
 	// UpstreamURL is the base URL requests are forwarded to.
 	UpstreamURL string
@@ -100,9 +100,32 @@ func (p *Proxy) scanBody(req *http.Request) {
 	}
 	_ = req.Body.Close()
 
-	// Layer 1 (known values) then layer 2 (patterns). A nil pattern set
-	// keeps the legacy behavior exactly.
-	masked, changed := redact.ScanAll(string(raw), p.secrets.Snapshot(), p.minLen, p.patterns)
+	// Layer 1 (known values) is always masked. Layer 2 (patterns) then
+	// either masks the result or only reports detections (log mode).
+	masked, changed := redact.ScanAndRedact(string(raw), p.secrets.Snapshot(), p.minLen)
+	if p.patterns != nil {
+		if p.patternMode == "log" {
+			// 第1層のマスクは常に適用（changed は既に反映済み）。
+			// 第2層は検出のみ: 本文を変えず audit を発行する（段階ロールアウト用）。
+			if _, patHit := p.patterns.Scan(string(raw)); patHit {
+				p.logf("scan: pattern detected (mode=log) %s %s", req.Method, req.URL.Path)
+				if p.audit != nil {
+					p.audit.Emit(audit.Event{
+						TS:      time.Now(),
+						Event:   audit.DlpRedact,
+						Host:    req.URL.Host,
+						Verdict: audit.VerdictRedact,
+						Detail:  "patterns=hit&mode=log",
+					})
+				}
+			}
+		} else { // "mask"
+			patMasked, patChanged := p.patterns.Scan(masked) // 第1層マスク済みテキストに適用
+			if patChanged {
+				masked, changed = patMasked, true
+			}
+		}
+	}
 	if changed {
 		p.logf("scan: redacted secrets in %s %s", req.Method, req.URL.Path)
 		if p.audit != nil {

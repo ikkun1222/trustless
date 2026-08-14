@@ -132,6 +132,11 @@ func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath s
 		return fmt.Errorf("dlp config: %w", err)
 	}
 
+	patterns, err := dlp.BuildPatternSet(dlpCfg)
+	if err != nil {
+		return fmt.Errorf("dlp patterns: %w", err) // fail-closed
+	}
+
 	secrets, err := dlp.LoadSecretsFromBackend(be, dlpCfg.MinSecretLen)
 	if err != nil {
 		return fmt.Errorf("load secrets: %w", err)
@@ -139,7 +144,7 @@ func serveCore(ctx context.Context, injectPort int, scrubListen, dlpConfigPath s
 	logger.Printf("loaded %d secrets (min length %d)", len(secrets), dlpCfg.MinSecretLen)
 	set := dlpproxy.NewSecrets(secrets)
 
-	dlpHandler := recoverMiddleware(dlp.BuildHandler(dlpCfg, set, logger, sink), logger)
+	dlpHandler := recoverMiddleware(dlp.BuildHandler(dlpCfg, set, patterns, string(dlpCfg.PatternMode), logger, sink), logger)
 	dlpServer := &http.Server{Handler: dlpHandler}
 	dlpListener, err := net.Listen("tcp", scrubListen)
 	if err != nil {

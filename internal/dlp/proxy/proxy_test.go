@@ -9,7 +9,57 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/ikkun1222/trustless/internal/audit"
+	"github.com/ikkun1222/trustless/internal/dlp/redact"
 )
+
+// testSink is a thread-safe in-memory audit sink.
+type testSink struct {
+	mu  sync.Mutex
+	evs []audit.Event
+}
+
+func (s *testSink) Emit(ev audit.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evs = append(s.evs, ev)
+}
+
+func (s *testSink) Close() {}
+
+func (s *testSink) events() []audit.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]audit.Event, len(s.evs))
+	copy(out, s.evs)
+	return out
+}
+
+// buildPatterns returns a minimal gitleaks-compatible set that matches
+// sk-proj- + 40 alphanumeric chars (high entropy).
+func buildPatterns(t *testing.T) *redact.PatternSet {
+	t.Helper()
+	ps, err := redact.LoadPatterns([]byte(`
+[[rules]]
+id = "test-openai"
+description = "test rule"
+regex = '''sk-proj-[A-Za-z0-9]{40}'''
+keywords = ["sk-proj-"]
+entropy = 3.0
+`))
+	if err != nil {
+		t.Fatalf("LoadPatterns: %v", err)
+	}
+	return ps
+}
+
+// highEntropyPat returns a pattern-matchable fixture: sk-proj- + 40 chars
+// drawn from a 62-char alphabet so the match clears the entropy threshold.
+func highEntropyPat() string {
+	seg := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	return "sk-proj-" + seg[:40]
+}
 
 // newTestSetup starts an upstream httptest server that records the bodies it
 // receives, plus a dlp-proxy in front of it. Returns the proxy base URL and
@@ -318,5 +368,168 @@ func TestSecrets_HotSwap(t *testing.T) {
 	}
 	if got := post(`{"content":"old is ` + oldSecret + `"}`); !strings.Contains(got, oldSecret) {
 		t.Fatalf("old secret still masked after swap: %s", got)
+	}
+}
+
+// TestProxy_LogModeEmitsAuditBodyUnchanged verifies the log mode: pattern
+// detection leaves the body untouched but emits a dlp.redact audit event.
+func TestProxy_LogModeEmitsAuditBodyUnchanged(t *testing.T) {
+	pat := highEntropyPat()
+	sink := &testSink{}
+
+	var received []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxy := New(Options{
+		Secrets:      NewSecrets(nil),
+		MinSecretLen: 8,
+		Patterns:     buildPatterns(t),
+		PatternMode:  "log",
+		UpstreamURL:  upstream.URL,
+		Audit:        sink,
+	})
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	body := `{"content":"key is ` + pat + ` now"}`
+	resp, err := http.Post(proxyServer.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if string(received) != body {
+		t.Fatalf("log mode must not change the body, got %q want %q", received, body)
+	}
+	evs := sink.events()
+	if len(evs) != 1 {
+		t.Fatalf("expected 1 audit event, got %d", len(evs))
+	}
+	if evs[0].Event != audit.DlpRedact || evs[0].Verdict != audit.VerdictRedact || evs[0].Detail != "patterns=hit&mode=log" {
+		t.Fatalf("unexpected audit event: %+v", evs[0])
+	}
+}
+
+// TestProxy_LogModeNoPatternHit verifies that log mode emits nothing when no
+// pattern matches.
+func TestProxy_LogModeNoPatternHit(t *testing.T) {
+	sink := &testSink{}
+
+	var received []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxy := New(Options{
+		Secrets:      NewSecrets(nil),
+		MinSecretLen: 8,
+		Patterns:     buildPatterns(t),
+		PatternMode:  "log",
+		UpstreamURL:  upstream.URL,
+		Audit:        sink,
+	})
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	body := `{"content":"hello world"}`
+	resp, err := http.Post(proxyServer.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if string(received) != body {
+		t.Fatalf("body changed unexpectedly: %q", received)
+	}
+	if evs := sink.events(); len(evs) != 0 {
+		t.Fatalf("expected no audit events, got %d: %+v", len(evs), evs)
+	}
+}
+
+// TestProxy_MaskModeRedactsPattern verifies the mask mode: layer 2 replaces
+// pattern matches in the body (already layer-1-masked text).
+func TestProxy_MaskModeRedactsPattern(t *testing.T) {
+	pat := highEntropyPat()
+	known := "sk-known-secret-value-abc123"
+	sink := &testSink{}
+
+	var received []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxy := New(Options{
+		Secrets:      NewSecrets([]string{known}),
+		MinSecretLen: 8,
+		Patterns:     buildPatterns(t),
+		PatternMode:  "mask",
+		UpstreamURL:  upstream.URL,
+		Audit:        sink,
+	})
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	body := `{"content":"known ` + known + ` and pat ` + pat + `"}`
+	resp, err := http.Post(proxyServer.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got := string(received)
+	if strings.Contains(got, known) || strings.Contains(got, pat) {
+		t.Fatalf("mask mode must redact both layers, got %q", got)
+	}
+	if n := strings.Count(got, redact.Marker); n != 2 {
+		t.Fatalf("expected exactly 2 markers, got %d in %q", n, got)
+	}
+	evs := sink.events()
+	if len(evs) != 1 || evs[0].Detail != "redacted=true" {
+		t.Fatalf("expected 1 redacted audit event, got %d: %+v", len(evs), evs)
+	}
+}
+
+// TestProxy_NilPatternsLegacy verifies that a nil pattern set keeps the
+// legacy behavior: only known-value masking, no pattern masking or log audit.
+func TestProxy_NilPatternsLegacy(t *testing.T) {
+	pat := highEntropyPat()
+	sink := &testSink{}
+
+	var received []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxy := New(Options{
+		Secrets:      NewSecrets(nil),
+		MinSecretLen: 8,
+		UpstreamURL:  upstream.URL,
+		Audit:        sink,
+	})
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	body := `{"content":"key is ` + pat + ` now"}`
+	resp, err := http.Post(proxyServer.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if string(received) != body {
+		t.Fatalf("nil patterns must pass the body through unchanged, got %q", received)
+	}
+	if evs := sink.events(); len(evs) != 0 {
+		t.Fatalf("expected no audit events, got %d: %+v", len(evs), evs)
 	}
 }
