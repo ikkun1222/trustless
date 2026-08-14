@@ -182,3 +182,73 @@ func TestLoad_ZeroRefreshInterval(t *testing.T) {
 		t.Fatal("expected error for zero duration")
 	}
 }
+
+func TestLoad_PatternModeDefault(t *testing.T) {
+	path := writeConfig(t, `{
+  "secrets_refresh_interval": "10m",
+  "routes": [{"prefix": "/v1", "url": "http://x"}]
+}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PatternMode != PatternModeMask {
+		t.Fatalf("default PatternMode = %q, want %q", cfg.PatternMode, PatternModeMask)
+	}
+}
+
+func TestLoad_PatternModeNormalized(t *testing.T) {
+	path := writeConfig(t, `{
+  "secrets_refresh_interval": "10m",
+  "pattern_mode": "",
+  "routes": [{"prefix": "/v1", "url": "http://x"}]
+}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PatternMode != PatternModeMask {
+		t.Fatalf("empty PatternMode = %q, want normalized to %q", cfg.PatternMode, PatternModeMask)
+	}
+}
+
+func TestLoad_PatternModeLog(t *testing.T) {
+	path := writeConfig(t, `{
+  "secrets_refresh_interval": "10m",
+  "pattern_mode": "log",
+  "routes": [{"prefix": "/v1", "url": "http://x"}]
+}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PatternMode != PatternModeLog {
+		t.Fatalf("PatternMode = %q, want %q", cfg.PatternMode, PatternModeLog)
+	}
+}
+
+func TestLoad_PatternModeInvalid(t *testing.T) {
+	path := writeConfig(t, `{
+  "secrets_refresh_interval": "10m",
+  "pattern_mode": "block",
+  "routes": [{"prefix": "/v1", "url": "http://x"}]
+}`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error for unknown pattern_mode")
+	}
+}
+
+func TestLoad_RulesFilePreserved(t *testing.T) {
+	path := writeConfig(t, `{
+  "secrets_refresh_interval": "10m",
+  "rules_file": "/etc/gitleaks.toml",
+  "routes": [{"prefix": "/v1", "url": "http://x"}]
+}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RulesFile != "/etc/gitleaks.toml" {
+		t.Fatalf("RulesFile = %q, want /etc/gitleaks.toml", cfg.RulesFile)
+	}
+}

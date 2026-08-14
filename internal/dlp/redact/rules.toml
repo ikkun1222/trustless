@@ -1,0 +1,271 @@
+# DLP pattern rules for trustless.
+# Derived from gitleaks config/gitleaks.toml — MIT License,
+# Copyright (c) 2019 Zachary Rice. See LICENSE.gitleaks / NOTICE.
+# Schema is gitleaks-compatible: id/description/regex/keywords/entropy/secret_group.
+[[rules]]
+id = "aws-access-token"
+description = "Identified a pattern that may indicate AWS credentials, risking unauthorized cloud resource access and data breaches on AWS platforms."
+regex = '''\b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\b'''
+keywords = ["a3t", "akia", "asia", "abia", "acca"]
+entropy = 3
+
+[[rules]]
+id = "aws-amazon-bedrock-api-key-long-lived"
+description = "Identified a pattern that may indicate long-lived Amazon Bedrock API keys, risking unauthorized Amazon Bedrock usage"
+regex = '''\b(ABSK[A-Za-z0-9+/]{109,269}={0,2})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["absk"]
+entropy = 3
+
+[[rules]]
+id = "aws-amazon-bedrock-api-key-short-lived"
+description = "Identified a pattern that may indicate short-lived Amazon Bedrock API keys, risking unauthorized Amazon Bedrock usage"
+regex = '''bedrock-api-key-YmVkcm9jay5hbWF6b25hd3MuY29t'''
+keywords = ["bedrock-api-key-"]
+entropy = 3
+
+[[rules]]
+id = "github-pat"
+description = "Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure."
+regex = '''ghp_[0-9a-zA-Z]{36}'''
+keywords = ["ghp_"]
+entropy = 3
+
+[[rules]]
+id = "github-fine-grained-pat"
+description = "Found a GitHub Fine-Grained Personal Access Token, risking unauthorized repository access and code manipulation."
+regex = '''github_pat_\w{82}'''
+keywords = ["github_pat_"]
+entropy = 3
+
+[[rules]]
+id = "github-oauth"
+description = "Discovered a GitHub OAuth Access Token, posing a risk of compromised GitHub account integrations and data leaks."
+regex = '''gho_[0-9a-zA-Z]{36}'''
+keywords = ["gho_"]
+entropy = 3
+
+[[rules]]
+id = "gitlab-pat"
+description = "Identified a GitLab Personal Access Token, risking unauthorized access to GitLab repositories and codebase exposure."
+regex = '''glpat-[\w-]{20}'''
+keywords = ["glpat-"]
+entropy = 3
+
+[[rules]]
+id = "gitlab-cicd-job-token"
+description = "Identified a GitLab CI/CD Job Token, potential access to projects and some APIs on behalf of a user while the CI job is running."
+regex = '''glcbt-[0-9a-zA-Z]{1,5}_[0-9a-zA-Z_-]{20}'''
+keywords = ["glcbt-"]
+entropy = 3
+
+[[rules]]
+id = "gitlab-oauth-app-secret"
+description = "Identified a GitLab OIDC Application Secret, risking access to apps using GitLab as authentication provider."
+regex = '''gloas-[0-9a-zA-Z_\-]{64}'''
+keywords = ["gloas-"]
+entropy = 3
+
+[[rules]]
+id = "openai-api-key"
+description = "Found an OpenAI API Key, posing a risk of unauthorized access to AI services and data manipulation."
+regex = '''\b(sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})\b|sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["t3blbkfj"]
+entropy = 3
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Identified an Anthropic API Key, which may compromise AI assistant integrations and expose sensitive data to unauthorized access."
+regex = '''\b(sk-ant-api03-[a-zA-Z0-9_\-]{93}AA)(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["sk-ant-api03"]
+
+[[rules]]
+id = "gcp-api-key"
+description = "Uncovered a GCP API key, which could lead to unauthorized access to Google Cloud services and data breaches."
+regex = '''\b(AIza[\w-]{35})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["aiza"]
+entropy = 4
+
+[[rules]]
+id = "slack-bot-token"
+description = "Identified a Slack Bot token, which may compromise bot integrations and communication channel security."
+regex = '''xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*'''
+keywords = ["xoxb"]
+entropy = 3
+
+[[rules]]
+id = "slack-user-token"
+description = "Found a Slack User token, posing a risk of unauthorized user impersonation and data access within Slack workspaces."
+regex = '''xox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}'''
+keywords = ["xoxp-", "xoxe-"]
+entropy = 2
+
+[[rules]]
+id = "slack-webhook-url"
+description = "Discovered a Slack Webhook, which could lead to unauthorized message posting and data leakage in Slack channels."
+regex = '''(?:https?://)?hooks.slack.com/(?:services|workflows|triggers)/[A-Za-z0-9+/]{43,56}'''
+keywords = ["hooks.slack.com"]
+
+[[rules]]
+id = "stripe-access-token"
+description = "Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data."
+regex = '''\b((?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["sk_test", "sk_live", "sk_prod", "rk_test", "rk_live", "rk_prod"]
+entropy = 2
+
+[[rules]]
+id = "twilio-api-key"
+description = "Found a Twilio API Key, posing a risk to communication services and sensitive customer interaction data."
+regex = '''SK[0-9a-fA-F]{32}'''
+keywords = ["sk"]
+entropy = 3
+
+[[rules]]
+id = "sendgrid-api-token"
+description = "Detected a SendGrid API token, posing a risk of unauthorized email service operations and data exposure."
+regex = '''\b(SG\.(?i)[a-z0-9=_\-\.]{66})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["sg."]
+entropy = 2
+
+[[rules]]
+id = "npm-access-token"
+description = "Uncovered an npm access token, potentially compromising package management and code repository access."
+regex = '''(?i)\b(npm_[a-z0-9]{36})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["npm_"]
+entropy = 2
+
+[[rules]]
+id = "pypi-upload-token"
+description = "Discovered a PyPI upload token, potentially compromising Python package distribution and repository integrity."
+regex = '''pypi-AgEIcHlwaS5vcmc[\w-]{50,1000}'''
+keywords = ["pypi-ageichlwas5vcmc"]
+entropy = 3
+
+[[rules]]
+id = "rubygems-api-token"
+description = "Identified a Rubygem API token, potentially compromising Ruby library distribution and package management."
+regex = '''\b(rubygems_[a-f0-9]{48})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["rubygems_"]
+entropy = 2
+
+[[rules]]
+id = "heroku-api-key"
+description = "Detected a Heroku API Key, potentially compromising cloud application deployments and operational security."
+regex = '''(?i)[\w.-]{0,50}?(?:heroku)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["heroku"]
+
+[[rules]]
+id = "azure-ad-client-secret"
+description = "Azure AD Client Secret"
+regex = '''(?:^|[\\'"\x60\s>=:(,)])([a-zA-Z0-9_~.]{3}\dQ~[a-zA-Z0-9_~.-]{31,34})(?:$|[\\'"\x60\s<),])'''
+keywords = ["q~"]
+entropy = 3
+
+[[rules]]
+id = "jwt"
+description = "Uncovered a JSON Web Token, which may lead to unauthorized access to web applications and sensitive user data."
+regex = '''\b(ey[a-zA-Z0-9]{17,}\.ey[a-zA-Z0-9\/\\_-]{17,}\.(?:[a-zA-Z0-9\/\\_-]{10,}={0,2})?)(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["ey"]
+entropy = 3
+
+[[rules]]
+id = "private-key"
+description = "Identified a Private Key, which may compromise cryptographic security and sensitive data encryption."
+regex = '''(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----'''
+keywords = ["-----begin"]
+
+[[rules]]
+id = "generic-api-key"
+description = "Detected a Generic API Key, potentially exposing access to various services and sensitive operations."
+regex = '''(?i)[\w.-]{0,50}?(?:access|auth|(?-i:[Aa]pi|API)|credential|creds|key|passw(?:or)?d|secret|token)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([\w.=-]{10,150}|[a-z0-9][a-z0-9+/]{11,}={0,3})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["access", "api", "auth", "key", "credential", "creds", "passwd", "password", "secret", "token"]
+entropy = 3.5
+
+[[rules]]
+id = "telegram-bot-api-token"
+description = "Detected a Telegram Bot API Token, risking unauthorized bot operations and message interception on Telegram."
+regex = '''(?i)[\w.-]{0,50}?(?:telegr)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([0-9]{5,16}:(?-i:A)[a-z0-9_\-]{34})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["telegr"]
+
+[[rules]]
+id = "discord-api-token"
+description = "Detected a Discord API key, potentially compromising communication channels and user data privacy on Discord."
+regex = '''(?i)[\w.-]{0,50}?(?:discord)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-f0-9]{64})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["discord"]
+
+[[rules]]
+id = "dropbox-api-token"
+description = "Identified a Dropbox API secret, which could lead to unauthorized file access and data breaches in Dropbox storage."
+regex = '''(?i)[\w.-]{0,50}?(?:dropbox)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-z0-9]{15})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["dropbox"]
+
+[[rules]]
+id = "shopify-access-token"
+description = "Uncovered a Shopify access token, which could lead to unauthorized e-commerce platform access and data breaches."
+regex = '''shpat_[a-fA-F0-9]{32}'''
+keywords = ["shpat_"]
+entropy = 2
+
+[[rules]]
+id = "square-access-token"
+description = "Detected a Square Access Token, risking unauthorized payment processing and financial transaction exposure."
+regex = '''\b((?:EAAA|sq0atp-)[\w-]{22,60})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["sq0atp-", "eaaa"]
+entropy = 2
+
+[[rules]]
+id = "datadog-access-token"
+description = "Detected a Datadog Access Token, potentially risking monitoring and analytics data exposure and manipulation."
+regex = '''(?i)[\w.-]{0,50}?(?:datadog)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-z0-9]{40})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["datadog"]
+
+[[rules]]
+id = "digitalocean-pat"
+description = "Discovered a DigitalOcean Personal Access Token, posing a threat to cloud infrastructure security and data privacy."
+regex = '''\b(dop_v1_[a-f0-9]{64})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["dop_v1_"]
+entropy = 3
+
+[[rules]]
+id = "fastly-api-token"
+description = "Uncovered a Fastly API key, which may compromise CDN and edge cloud services, leading to content delivery and security issues."
+regex = '''(?i)[\w.-]{0,50}?(?:fastly)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-z0-9=_\-]{32})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["fastly"]
+
+[[rules]]
+id = "grafana-api-key"
+description = "Identified a Grafana API key, which could compromise monitoring dashboards and sensitive data analytics."
+regex = '''(?i)\b(eyJrIjoi[A-Za-z0-9]{70,400}={0,3})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["eyjrijoi"]
+entropy = 3
+
+[[rules]]
+id = "huggingface-access-token"
+description = "Discovered a Hugging Face Access token, which could lead to unauthorized access to AI models and sensitive data."
+regex = '''\b(hf_(?i:[a-z]{34}))(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["hf_"]
+entropy = 2
+
+[[rules]]
+id = "age-secret-key"
+description = "Discovered a potential Age encryption tool secret key, risking data decryption and unauthorized access to sensitive information."
+regex = '''AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}'''
+keywords = ["age-secret-key-1"]
+
+[[rules]]
+id = "mailchimp-api-key"
+description = "Identified a Mailchimp API key, potentially compromising email marketing campaigns and subscriber data."
+regex = '''(?i)[\w.-]{0,50}?(?:MailchimpSDK.initialize|mailchimp)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-f0-9]{32}-us\d\d)(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["mailchimp"]
+
+[[rules]]
+id = "mailgun-pub-key"
+description = "Discovered a Mailgun public validation key, which could expose email verification processes and associated data."
+regex = '''(?i)[\w.-]{0,50}?(?:mailgun)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}(pubkey-[a-f0-9]{32})(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ["mailgun"]
+
+[[rules]]
+id = "microsoft-teams-webhook"
+description = "Uncovered a Microsoft Teams Webhook, which could lead to unauthorized access to team collaboration tools and data leaks."
+regex = '''https://[a-z0-9]+\.webhook\.office\.com/webhookb2/[a-z0-9]{8}-([a-z0-9]{4}-){3}[a-z0-9]{12}@[a-z0-9]{8}-([a-z0-9]{4}-){3}[a-z0-9]{12}/IncomingWebhook/[a-z0-9]{32}/[a-z0-9]{8}-([a-z0-9]{4}-){3}[a-z0-9]{12}'''
+keywords = ["webhook.office.com", "webhookb2", "incomingwebhook"]
+

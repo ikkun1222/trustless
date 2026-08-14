@@ -26,6 +26,14 @@ type Options struct {
 	// MinSecretLen is the minimum secret length considered (shorter values
 	// are ignored to avoid false positives in ordinary prose).
 	MinSecretLen int
+	// Patterns is the compiled gitleaks-compatible rule set for the
+	// pattern-based layer (keyword → RE2 → entropy). A nil value keeps the
+	// legacy behavior: known-value substring scanning only.
+	Patterns *redact.PatternSet
+	// PatternMode is the action applied to pattern matches: "mask" (the
+	// default; any other value also masks) or "log" (detection only — the
+	// body is left unchanged and a dlp.redact audit event is emitted).
+	PatternMode string
 	// UpstreamURL is the base URL requests are forwarded to.
 	UpstreamURL string
 	// Logger receives scan diagnostics. Nil disables logging.
@@ -35,11 +43,13 @@ type Options struct {
 
 // Proxy is a reverse proxy that masks secrets in outbound request bodies.
 type Proxy struct {
-	rp      *httputil.ReverseProxy
-	secrets *Secrets
-	minLen  int
-	logger  *log.Logger
-	audit   audit.Sink
+	rp          *httputil.ReverseProxy
+	secrets     *Secrets
+	minLen      int
+	patterns    *redact.PatternSet
+	patternMode string
+	logger      *log.Logger
+	audit       audit.Sink
 }
 
 // New builds a Proxy forwarding to upstreamURL, masking any secret value
@@ -52,10 +62,12 @@ func New(opts Options) http.Handler {
 		panic("proxy: invalid upstream URL: " + err.Error())
 	}
 	p := &Proxy{
-		secrets: opts.Secrets,
-		minLen:  opts.MinSecretLen,
-		logger:  opts.Logger,
-		audit:   opts.Audit,
+		secrets:     opts.Secrets,
+		minLen:      opts.MinSecretLen,
+		patterns:    opts.Patterns,
+		patternMode: opts.PatternMode,
+		logger:      opts.Logger,
+		audit:       opts.Audit,
 	}
 	if p.secrets == nil {
 		p.secrets = NewSecrets(nil)
@@ -88,7 +100,32 @@ func (p *Proxy) scanBody(req *http.Request) {
 	}
 	_ = req.Body.Close()
 
+	// Layer 1 (known values) is always masked. Layer 2 (patterns) then
+	// either masks the result or only reports detections (log mode).
 	masked, changed := redact.ScanAndRedact(string(raw), p.secrets.Snapshot(), p.minLen)
+	if p.patterns != nil {
+		if p.patternMode == "log" {
+			// 第1層のマスクは常に適用（changed は既に反映済み）。
+			// 第2層は検出のみ: 本文を変えず audit を発行する（段階ロールアウト用）。
+			if _, patHit := p.patterns.Scan(string(raw)); patHit {
+				p.logf("scan: pattern detected (mode=log) %s %s", req.Method, req.URL.Path)
+				if p.audit != nil {
+					p.audit.Emit(audit.Event{
+						TS:      time.Now(),
+						Event:   audit.DlpRedact,
+						Host:    req.URL.Host,
+						Verdict: audit.VerdictRedact,
+						Detail:  "patterns=hit&mode=log",
+					})
+				}
+			}
+		} else { // "mask"
+			patMasked, patChanged := p.patterns.Scan(masked) // 第1層マスク済みテキストに適用
+			if patChanged {
+				masked, changed = patMasked, true
+			}
+		}
+	}
 	if changed {
 		p.logf("scan: redacted secrets in %s %s", req.Method, req.URL.Path)
 		if p.audit != nil {

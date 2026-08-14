@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -89,7 +90,11 @@ func start(args []string) {
 	logger.Printf("loaded %d secrets from %s (min length %d)", len(secrets), cfg.SecretsSource, cfg.MinSecretLen)
 
 	secretSet := dlpproxy.NewSecrets(secrets)
-	handler := buildHandler(cfg, secretSet, logger, audit.Off())
+	patterns, err := BuildPatternSet(cfg)
+	if err != nil {
+		logger.Fatalf("patterns: %v", err) // fail-closed
+	}
+	handler := buildHandler(cfg, secretSet, patterns, string(cfg.PatternMode), logger, audit.Off())
 	load := func(cfg *dlpconfig.Config) ([]string, error) {
 		return loadSecrets(cfg)
 	}
@@ -156,16 +161,46 @@ func LoadSecretsFromBackend(be backend.Backend, minLen int) ([]string, error) {
 	return kept, nil
 }
 
+// BuildPatternSet は config に従いパターンセットを構築する。
+// rules_file 空 = 同梱 rules.toml。非空 = 外部ファイルを読み込んで LoadPatterns。
+// ~ はホーム展開する（os.UserHomeDir）。ファイル不存在・パース失敗は error（fail-closed）。
+// 反映はプロセス再起動で行う（SIGHUP / 定期リロードは秘密リストのみ再読込）。
+func BuildPatternSet(cfg *dlpconfig.Config) (*redact.PatternSet, error) {
+	if cfg.RulesFile == "" {
+		return redact.DefaultPatterns()
+	}
+	path := cfg.RulesFile
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("expand rules_file: %w", err)
+		}
+		path = filepath.Join(home, path[2:])
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read rules_file %s: %w", path, err)
+	}
+	return redact.LoadPatterns(raw)
+}
+
 // BuildHandler assembles the route-multiplexing handler. Each route strips
 // its local prefix, forwards the remainder to the upstream (joining the
 // upstream's base path), and masks secrets in the request body. The secrets
 // set is shared across routes and may be hot-swapped at runtime.
-func BuildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.Logger, sink audit.Sink) http.Handler {
+//
+// The pattern layer and its mode are injected per config (BuildPatternSet +
+// cfg.PatternMode). Any load failure must be handled by the caller before
+// BuildHandler is reached (fail-closed): the proxy never starts with a
+// partially armed rule set.
+func BuildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, patterns *redact.PatternSet, patternMode string, logger *log.Logger, sink audit.Sink) http.Handler {
 	mux := http.NewServeMux()
 	for _, r := range cfg.Routes {
 		p := dlpproxy.New(dlpproxy.Options{
 			Secrets:      secrets,
 			MinSecretLen: cfg.MinSecretLen,
+			Patterns:     patterns,
+			PatternMode:  patternMode,
 			UpstreamURL:  r.URL,
 			Logger:       logger,
 			Audit:        sink,
@@ -178,8 +213,8 @@ func BuildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.
 }
 
 // buildHandler is kept as a thin alias for the in-package tests.
-func buildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.Logger, sink audit.Sink) http.Handler {
-	return BuildHandler(cfg, secrets, logger, sink)
+func buildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, patterns *redact.PatternSet, patternMode string, logger *log.Logger, sink audit.Sink) http.Handler {
+	return BuildHandler(cfg, secrets, patterns, patternMode, logger, sink)
 }
 
 // refreshLoop periodically reloads secrets from the configured source and
