@@ -1,0 +1,5 @@
+trustless
+========
+The DLP pattern rules in internal/dlp/redact/rules.toml are derived from
+gitleaks (https://github.com/gitleaks/gitleaks), MIT License,
+Copyright (c) 2019 Zachary Rice. See LICENSE.gitleaks for the full text.
