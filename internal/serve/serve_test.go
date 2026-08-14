@@ -22,6 +22,7 @@ import (
 	"github.com/ikkun1222/trustless/internal/audit"
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
+	"github.com/ikkun1222/trustless/internal/dlp"
 	dlpconfig "github.com/ikkun1222/trustless/internal/dlp/config"
 	dlpproxy "github.com/ikkun1222/trustless/internal/dlp/proxy"
 	"github.com/ikkun1222/trustless/internal/proxy"
@@ -77,6 +78,12 @@ func freePort(t *testing.T) int {
 
 // writeTempDlpConfig writes a minimal valid dlp-proxy config.json.
 func writeTempDlpConfig(t *testing.T) string {
+	return writeTempDlpConfigOpts(t, "", nil)
+}
+
+// writeTempDlpConfigOpts は writeTempDlpConfig に pattern_mode / pattern_disabled を
+// 追加できる版。ホットリロードテストはこの戻り値のパスを書き換えて reloadAll を呼ぶ。
+func writeTempDlpConfigOpts(t *testing.T, patternMode string, patternDisabled []string) string {
 	t.Helper()
 	cfg := map[string]any{
 		"listen":                   "127.0.0.1:0",
@@ -86,6 +93,12 @@ func writeTempDlpConfig(t *testing.T) string {
 		"routes": []map[string]string{
 			{"prefix": "/v1/openai", "url": "http://127.0.0.1:1/v1/openai"},
 		},
+	}
+	if patternMode != "" {
+		cfg["pattern_mode"] = patternMode
+	}
+	if len(patternDisabled) > 0 {
+		cfg["pattern_disabled"] = patternDisabled
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -192,17 +205,22 @@ func TestServeは定期リロードで秘密セットを置き換える(t *testi
 	set := dlpproxy.NewSecrets([]string{"old-secret-1234567890"})
 	fwd := &proxy.Proxy{}
 	dlpCfg := &dlpconfig.Config{MinSecretLen: 8}
+	patterns, err := dlp.BuildPatternSet(dlpCfg)
+	if err != nil {
+		t.Fatalf("BuildPatternSet: %v", err)
+	}
+	patternMode := dlpproxy.NewPatternMode(string(dlpCfg.PatternMode))
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
 
-	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, audit.Off(), logger)
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, patterns, patternMode, audit.Off(), logger)
 	if got := set.Snapshot(); len(got) != 1 || got[0] != "old-secret-1234567890" {
 		t.Fatalf("set after first reload = %v", got)
 	}
 
 	be.setValues([]string{"new-secret-1234567890"})
-	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, audit.Off(), logger)
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, patterns, patternMode, audit.Off(), logger)
 
 	if got := set.Snapshot(); len(got) != 1 || got[0] != "new-secret-1234567890" {
 		t.Fatalf("set after second reload = %v, want new secret", got)
@@ -221,16 +239,21 @@ func TestServeはリロード失敗時に既存秘密を維持する(t *testing.
 	set := dlpproxy.NewSecrets([]string{"old-secret-1234567890"})
 	fwd := &proxy.Proxy{}
 	dlpCfg := &dlpconfig.Config{MinSecretLen: 8}
+	patterns, err := dlp.BuildPatternSet(dlpCfg)
+	if err != nil {
+		t.Fatalf("BuildPatternSet: %v", err)
+	}
+	patternMode := dlpproxy.NewPatternMode(string(dlpCfg.PatternMode))
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
 
-	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, audit.Off(), logger)
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, patterns, patternMode, audit.Off(), logger)
 
 	// 2 回目の backend Reload を失敗させても旧セットが維持される（fail-safe）
 	be.setValues([]string{"new-secret-1234567890"})
 	be.setReload(errors.New("bw session expired (simulated)"))
-	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, audit.Off(), logger)
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, patterns, patternMode, audit.Off(), logger)
 
 	if got := set.Snapshot(); len(got) != 1 || got[0] != "old-secret-1234567890" {
 		t.Fatalf("set changed on failed reload: %v (want old secret kept)", got)
@@ -290,5 +313,110 @@ func TestServeのrecoverミドルウェアはpanicを500に変換する(t *testi
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestServeのreloadAllはパターンとモードをホットリロードする(t *testing.T) {
+	isolateTrustlessConfig(t)
+	// pattern_disabled を指定した config で開始 → ルールが減っている
+	dlpCfgPath := writeTempDlpConfigOpts(t, "", []string{"aws-access-token", "github-pat"})
+	dlpCfg := &dlpconfig.Config{MinSecretLen: 8}
+	patterns, err := dlp.BuildPatternSet(dlpCfg)
+	if err != nil {
+		t.Fatalf("BuildPatternSet: %v", err)
+	}
+	total := patterns.Count()
+	if total == 0 {
+		t.Fatal("default patterns unexpectedly empty")
+	}
+	patternMode := dlpproxy.NewPatternMode("mask")
+
+	be := &fakeBackend{}
+	be.setValues([]string{"old-secret-1234567890"})
+	set := dlpproxy.NewSecrets([]string{"old-secret-1234567890"})
+	fwd := &proxy.Proxy{}
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	// 初回 reloadAll: config の pattern_disabled が効いて 2 ルール減る
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, patterns, patternMode, audit.Off(), logger)
+	if got := patterns.Count(); got != total-2 {
+		t.Fatalf("rules after first reload = %d, want %d (2 disabled)", got, total-2)
+	}
+	if got := patternMode.Get(); got != "mask" {
+		t.Fatalf("pattern mode = %q, want mask", got)
+	}
+
+	// config を書き換え: pattern_mode=log・pattern_disabled 全解除 → 全ルール有効化
+	fresh := writeTempDlpConfigOpts(t, "log", nil)
+	raw, err := os.ReadFile(fresh)
+	if err != nil {
+		t.Fatalf("read fresh config: %v", err)
+	}
+	if err := os.WriteFile(dlpCfgPath, raw, 0o600); err != nil {
+		t.Fatalf("rewrite dlp config: %v", err)
+	}
+
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, patterns, patternMode, audit.Off(), logger)
+
+	if got := patterns.Count(); got != total {
+		t.Fatalf("rules after second reload = %d, want %d (all re-enabled)", got, total)
+	}
+	if got := patternMode.Get(); got != "log" {
+		t.Fatalf("pattern mode = %q, want log", got)
+	}
+	if !strings.Contains(buf.String(), "reloaded patterns") {
+		t.Fatalf("expected reloaded patterns log, got: %s", buf.String())
+	}
+}
+
+func TestServeのreloadAllはパターン再構築失敗で旧状態を維持する(t *testing.T) {
+	isolateTrustlessConfig(t)
+	dlpCfgPath := writeTempDlpConfig(t)
+	dlpCfg := &dlpconfig.Config{MinSecretLen: 8}
+	patterns, err := dlp.BuildPatternSet(dlpCfg)
+	if err != nil {
+		t.Fatalf("BuildPatternSet: %v", err)
+	}
+	total := patterns.Count()
+	patternMode := dlpproxy.NewPatternMode("mask")
+
+	be := &fakeBackend{}
+	be.setValues([]string{"old-secret-1234567890"})
+	set := dlpproxy.NewSecrets([]string{"old-secret-1234567890"})
+	fwd := &proxy.Proxy{}
+
+	// 未知の pattern_disabled id → BuildPatternSet が error（fail-closed）
+	if err := os.WriteFile(dlpCfgPath, []byte(`{
+  "listen": "127.0.0.1:0",
+  "min_secret_len": 8,
+  "secrets_source": "pass",
+  "secrets_refresh_interval": "10m",
+  "routes": [{"prefix": "/v1/openai", "url": "http://127.0.0.1:1/v1/openai"}],
+  "pattern_mode": "log",
+  "pattern_disabled": ["no-such-rule-id"]
+}`), 0o600); err != nil {
+		t.Fatalf("write broken config: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	reloadAll(dlpCfgPath, dlpCfg, set, be, fwd, patterns, patternMode, audit.Off(), logger)
+
+	// パターンは旧維持・モードも旧維持
+	if got := patterns.Count(); got != total {
+		t.Fatalf("rules after failed rebuild = %d, want %d kept", got, total)
+	}
+	if got := patternMode.Get(); got != "mask" {
+		t.Fatalf("pattern mode = %q, want mask kept", got)
+	}
+	if !strings.Contains(buf.String(), "WARN: pattern rebuild failed") {
+		t.Fatalf("expected WARN log, got: %s", buf.String())
+	}
+	// 秘密リロードは成功済み → 巻き戻されない（新 secret が入っている）
+	if got := set.Snapshot(); len(got) != 1 || got[0] != "old-secret-1234567890" {
+		t.Fatalf("set = %v, want secret kept after failed pattern rebuild", got)
 	}
 }

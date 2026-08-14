@@ -55,6 +55,16 @@ func (p *PatternSet) Replace(new *PatternSet) {
 	p.rules = rules
 }
 
+// Count は現在のルール数を返す（ホットリロード時のログ用）。
+func (p *PatternSet) Count() int {
+	if p == nil {
+		return 0
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.rules)
+}
+
 // Has は指定 id のルールが存在するか報告する。
 func (p *PatternSet) Has(id string) bool {
 	p.mu.RLock()
