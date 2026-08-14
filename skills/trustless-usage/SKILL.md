@@ -51,7 +51,7 @@ Config (dlp config JSON):
 - `pattern_mode`: `"mask"` (default, redacts pattern matches) or `"log"` (detects only — body unchanged, audit event `dlp.redact` with `detail="patterns=hit&mode=log"`). Layer 1 always masks regardless of mode.
 - `pattern_disabled`: list of rule IDs to disable (e.g. `["generic-api-key"]`); unknown IDs fail the reload (fail-closed).
 
-Both `trustless dlp start` and `trustless serve` build the pattern set from the same config (`dlp.BuildPatternSet`). In `trustless serve`, `pattern_mode` / `pattern_disabled` / `rules_file` changes are applied on every reload — SIGHUP (`kill -HUP $(pgrep -f 'trustless serve')`) or the periodic refresh — with atomic `PatternSet.Replace` and fail-safe semantics (failed reload keeps the previous state + WARN). Standalone `trustless dlp start` reads them at startup only. The `scrub-db` / `scrub-text` commands remain known-value only.
+Both `trustless dlp start` and `trustless serve` build the pattern set from the same config (`dlp.BuildPatternSet`). In `trustless serve`, `pattern_mode` / `pattern_disabled` / `rules_file` changes are applied on every reload — SIGHUP (`kill -HUP $(pgrep -f 'trustless serve')`) or the periodic refresh — with atomic `PatternSet.Replace` and fail-safe semantics (failed reload keeps the previous state + WARN). Standalone `trustless dlp start` reads them at startup only. The `scrub-db` / `scrub-text` commands also support the pattern layer from the same config: dry-run (no `--apply`) reports pattern hits, and `pattern_mode: "log"` never replaces pattern matches even with `--apply`.
 
 ## Running Commands with Credentials
 

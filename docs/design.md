@@ -189,7 +189,7 @@ mv audit.jsonl audit.jsonl.1 && kill -HUP $(pgrep -f 'trustless serve')
 
 - 配線は `dlp.BuildPatternSet(cfg)` → `BuildHandler(cfg, secrets, patterns, patternMode, logger, sink)` の 1 点。`trustless dlp start` と `trustless serve` の両方が同じ経路（serve.go 実測 2026-08-14）
 - **ホットリロード（serve・2026-08-14）**: `trustless serve` は SIGHUP / 定期リロードのたびに config を再読込し、`PatternSet.Replace` + `PatternMode.Set` で原子的に反映（`reloaded patterns (N rules, mode=...)` ログ）。失敗時は WARN + 旧状態維持（fail-safe）。**スタンドアロン `trustless dlp start` は起動時読込のまま**（検証用）
-- `scrub-db` / `scrub-text` は既知値のみ（パターン層は対象外・YAGNI）
+- `scrub-db` / `scrub-text` もパターン第2層対応（2026-08-14）: config の `rules_file` / `pattern_disabled` / `pattern_mode` を尊重。`--apply` なし = dry-run（パターン検出のレポート）。`pattern_mode: "log"` なら `--apply` でもパターンは置換しない（既知値は常に置換）。DB は行単位 ScanAll 経路（patterns == nil の時のみ従来の SQL 経路）
 
 ### 実測知見（2026-08-14・スモーク + 本番 log 投入）
 
