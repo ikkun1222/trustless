@@ -178,6 +178,74 @@ func CheckPassStore() CheckResult {
 	}
 }
 
+// CheckBitwardenCLI verifies the bw CLI is installed and reachable.
+func CheckBitwardenCLI() CheckResult {
+	if _, err := exec.LookPath("bw"); err != nil {
+		return CheckResult{
+			Name:    "Bitwarden CLI",
+			Status:  StatusError,
+			Message: "'bw' command not found in PATH — install bitwarden-cli",
+		}
+	}
+	return CheckResult{
+		Name:    "Bitwarden CLI",
+		Status:  StatusOK,
+		Message: "bw CLI found",
+	}
+}
+
+// CheckBitwardenSession verifies a valid unlocked bw session exists.
+// The session key file (default ~/.config/trustless/bw-session, chmod 600)
+// must exist and `bw status` must report "unlocked".
+func CheckBitwardenSession() CheckResult {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return CheckResult{
+			Name:    "Bitwarden session",
+			Status:  StatusError,
+			Message: "Cannot determine home directory",
+		}
+	}
+	sessionPath := filepath.Join(home, ".config", "trustless", "bw-session")
+	data, err := os.ReadFile(sessionPath)
+	if err != nil {
+		return CheckResult{
+			Name:    "Bitwarden session",
+			Status:  StatusError,
+			Message: "No bw session file at ~/.config/trustless/bw-session — run 'trustless bw-unlock'",
+		}
+	}
+	session := strings.TrimSpace(string(data))
+	if session == "" {
+		return CheckResult{
+			Name:    "Bitwarden session",
+			Status:  StatusError,
+			Message: "bw-session file is empty — run 'trustless bw-unlock'",
+		}
+	}
+	cmd := exec.Command("bw", "status", "--session", session)
+	out, err := cmd.Output()
+	if err != nil {
+		return CheckResult{
+			Name:    "Bitwarden session",
+			Status:  StatusError,
+			Message: fmt.Sprintf("bw status failed: %v — run 'trustless bw-unlock'", err),
+		}
+	}
+	if strings.Contains(string(out), `"unlocked"`) {
+		return CheckResult{
+			Name:    "Bitwarden session",
+			Status:  StatusOK,
+			Message: "bw session unlocked",
+		}
+	}
+	return CheckResult{
+		Name:    "Bitwarden session",
+		Status:  StatusWarning,
+		Message: "bw session exists but vault is locked — run 'trustless bw-unlock'",
+	}
+}
+
 func CheckEnvFiles() CheckResult {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -283,7 +351,9 @@ func opencodeConfigPaths() []string {
 }
 
 func opencodeDetectFn(data []byte) bool {
-	return bytes.Contains(data, []byte("trustless"))
+	return bytes.Contains(data, []byte("trustless")) ||
+		bytes.Contains(data, []byte("127.0.0.1:8787")) ||
+		bytes.Contains(data, []byte("127.0.0.1:8080"))
 }
 
 func claudeConfigPaths() []string {
@@ -304,7 +374,9 @@ func codexConfigPaths() []string {
 }
 
 func codexDetectFn(data []byte) bool {
-	return bytes.Contains(data, []byte("trustless"))
+	return bytes.Contains(data, []byte("trustless")) ||
+		bytes.Contains(data, []byte("127.0.0.1:8787")) ||
+		bytes.Contains(data, []byte("127.0.0.1:8080"))
 }
 
 func hermesConfigPaths() []string {
@@ -313,7 +385,9 @@ func hermesConfigPaths() []string {
 }
 
 func hermesDetectFn(data []byte) bool {
-	return bytes.Contains(data, []byte("trustless"))
+	return bytes.Contains(data, []byte("trustless")) ||
+		bytes.Contains(data, []byte("127.0.0.1:8787")) ||
+		bytes.Contains(data, []byte("127.0.0.1:8080"))
 }
 
 func CheckMITMCA() CheckResult {

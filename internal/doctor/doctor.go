@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+
+	"github.com/ikkun1222/trustless/internal/config"
 )
 
 var (
@@ -37,36 +39,77 @@ func Run(args []string) {
 	jsonOut := fs.Bool("json", false, "Output as JSON")
 	fs.Parse(args)
 
-	groups := []reportGroup{
-		{
-			Name: "PASS STORE",
-			Checks: []CheckResult{
-				CheckGPG(),
-				CheckPassStore(),
-				CheckGPGAgent(),
+	// backend を config から判定（pass 既定）。config 読めない場合は pass 前提のまま
+	// チェックを続行（診断は警告でなく実行を優先）。
+	backend := "pass"
+	if cfg, err := config.Load(config.DefaultConfigPath()); err == nil && cfg.Backend != "" {
+		backend = cfg.Backend
+	}
+
+	var groups []reportGroup
+	if backend == "bitwarden" {
+		groups = []reportGroup{
+			{
+				Name: "BITWARDEN",
+				Checks: []CheckResult{
+					CheckBitwardenCLI(),
+					CheckBitwardenSession(),
+				},
 			},
-		},
-		{
-			Name: "SECURITY",
-			Checks: []CheckResult{
-				CheckEnvFiles(),
+			{
+				Name: "SECURITY",
+				Checks: []CheckResult{
+					CheckEnvFiles(),
+				},
 			},
-		},
-		{
-			Name: "AGENT INTEGRATIONS",
-			Checks: []CheckResult{
-				CheckAgentIntegration("OpenCode", opencodeConfigPaths(), opencodeDetectFn),
-				CheckAgentIntegration("Claude Code", claudeConfigPaths(), claudeDetectFn),
-				CheckAgentIntegration("Codex", codexConfigPaths(), codexDetectFn),
-				CheckAgentIntegration("Hermes", hermesConfigPaths(), hermesDetectFn),
+			{
+				Name: "AGENT INTEGRATIONS",
+				Checks: []CheckResult{
+					CheckAgentIntegration("OpenCode", opencodeConfigPaths(), opencodeDetectFn),
+					CheckAgentIntegration("Claude Code", claudeConfigPaths(), claudeDetectFn),
+					CheckAgentIntegration("Codex", codexConfigPaths(), codexDetectFn),
+					CheckAgentIntegration("Hermes", hermesConfigPaths(), hermesDetectFn),
+				},
 			},
-		},
-		{
-			Name: "MITM CA",
-			Checks: []CheckResult{
-				CheckMITMCA(),
+			{
+				Name: "MITM CA",
+				Checks: []CheckResult{
+					CheckMITMCA(),
+				},
 			},
-		},
+		}
+	} else {
+		groups = []reportGroup{
+			{
+				Name: "PASS STORE",
+				Checks: []CheckResult{
+					CheckGPG(),
+					CheckPassStore(),
+					CheckGPGAgent(),
+				},
+			},
+			{
+				Name: "SECURITY",
+				Checks: []CheckResult{
+					CheckEnvFiles(),
+				},
+			},
+			{
+				Name: "AGENT INTEGRATIONS",
+				Checks: []CheckResult{
+					CheckAgentIntegration("OpenCode", opencodeConfigPaths(), opencodeDetectFn),
+					CheckAgentIntegration("Claude Code", claudeConfigPaths(), claudeDetectFn),
+					CheckAgentIntegration("Codex", codexConfigPaths(), codexDetectFn),
+					CheckAgentIntegration("Hermes", hermesConfigPaths(), hermesDetectFn),
+				},
+			},
+			{
+				Name: "MITM CA",
+				Checks: []CheckResult{
+					CheckMITMCA(),
+				},
+			},
+		}
 	}
 
 	var all []CheckResult

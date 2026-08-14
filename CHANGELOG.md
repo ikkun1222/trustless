@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `trustless version` now reports the build-embedded version; release
   binaries embed the tag via ldflags (`-X main.version=vX.Y.Z`) instead of a
   hardcoded string. `go build` without ldflags reports `dev`.
+- `trustless doctor` now adapts to the configured credential backend:
+  Bitwarden setups get a BITWARDEN group (CLI presence + unlocked session)
+  instead of pass/GPG checks. Agent-integration detection also recognizes
+  DLP/injection proxy references (`127.0.0.1:8787` / `127.0.0.1:8080`), so
+  proxies-configured agents (Hermes, OpenCode) are no longer misreported as
+  unconfigured.
 
 ## [0.5.0] - 2026-08-14
 
