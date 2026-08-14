@@ -371,6 +371,121 @@ func TestSecrets_HotSwap(t *testing.T) {
 	}
 }
 
+// TestPatternMode_GetSet verifies the atomic holder: Set switches the mode
+// that subsequent Get calls report, including an empty initial value.
+func TestPatternMode_GetSet(t *testing.T) {
+	m := NewPatternMode("")
+	if got := m.Get(); got != "" {
+		t.Fatalf("initial Get = %q, want \"\"", got)
+	}
+	m.Set("log")
+	if got := m.Get(); got != "log" {
+		t.Fatalf("Get after Set(log) = %q, want log", got)
+	}
+	m.Set("mask")
+	if got := m.Get(); got != "mask" {
+		t.Fatalf("Get after Set(mask) = %q, want mask", got)
+	}
+}
+
+// TestProxy_PatternModeHotSwap verifies that switching the shared PatternMode
+// holder at runtime changes scanBody behavior: the same proxy starts in
+// mask mode (pattern redacted), flips to log mode (body unchanged + audit),
+// and flips back to mask mode.
+func TestProxy_PatternModeHotSwap(t *testing.T) {
+	pat := highEntropyPat()
+	sink := &testSink{}
+
+	var received []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	mode := NewPatternMode("mask")
+	proxy := New(Options{
+		Secrets:      NewSecrets(nil),
+		MinSecretLen: 8,
+		Patterns:     buildPatterns(t),
+		PatternMode:  mode,
+		UpstreamURL:  upstream.URL,
+		Audit:        sink,
+	})
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	body := `{"content":"key is ` + pat + ` now"}`
+	post := func() string {
+		resp, err := http.Post(proxyServer.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		defer resp.Body.Close()
+		return string(received)
+	}
+
+	// mask モード: パターンが置換される
+	if got := post(); !strings.Contains(got, redact.Marker) || strings.Contains(got, pat) {
+		t.Fatalf("mask mode must redact the pattern, got %q", got)
+	}
+
+	// log モードへ切替: 本文は不変・audit 発行
+	mode.Set("log")
+	if got := post(); got != body {
+		t.Fatalf("log mode must not change the body, got %q want %q", got, body)
+	}
+	evs := sink.events()
+	var logEvents int
+	for _, ev := range evs {
+		if ev.Detail == "patterns=hit&mode=log" {
+			logEvents++
+		}
+	}
+	if logEvents != 1 {
+		t.Fatalf("expected 1 log audit event, got %d: %+v", logEvents, evs)
+	}
+
+	// mask モードへ戻す: 再び置換される
+	mode.Set("mask")
+	if got := post(); !strings.Contains(got, redact.Marker) || strings.Contains(got, pat) {
+		t.Fatalf("mask mode after flip must redact the pattern, got %q", got)
+	}
+}
+
+// TestProxy_NilPatternModeDefaultsToMask verifies that a nil PatternMode in
+// Options defaults to mask: pattern matches are redacted.
+func TestProxy_NilPatternModeDefaultsToMask(t *testing.T) {
+	pat := highEntropyPat()
+
+	var received []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxy := New(Options{
+		Secrets:      NewSecrets(nil),
+		MinSecretLen: 8,
+		Patterns:     buildPatterns(t),
+		UpstreamURL:  upstream.URL,
+	})
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	body := `{"content":"key is ` + pat + ` now"}`
+	resp, err := http.Post(proxyServer.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := string(received); !strings.Contains(got, redact.Marker) || strings.Contains(got, pat) {
+		t.Fatalf("nil PatternMode must default to mask, got %q", got)
+	}
+}
+
 // TestProxy_LogModeEmitsAuditBodyUnchanged verifies the log mode: pattern
 // detection leaves the body untouched but emits a dlp.redact audit event.
 func TestProxy_LogModeEmitsAuditBodyUnchanged(t *testing.T) {
@@ -388,7 +503,7 @@ func TestProxy_LogModeEmitsAuditBodyUnchanged(t *testing.T) {
 		Secrets:      NewSecrets(nil),
 		MinSecretLen: 8,
 		Patterns:     buildPatterns(t),
-		PatternMode:  "log",
+		PatternMode:  NewPatternMode("log"),
 		UpstreamURL:  upstream.URL,
 		Audit:        sink,
 	})
@@ -430,7 +545,7 @@ func TestProxy_LogModeNoPatternHit(t *testing.T) {
 		Secrets:      NewSecrets(nil),
 		MinSecretLen: 8,
 		Patterns:     buildPatterns(t),
-		PatternMode:  "log",
+		PatternMode:  NewPatternMode("log"),
 		UpstreamURL:  upstream.URL,
 		Audit:        sink,
 	})
@@ -470,7 +585,7 @@ func TestProxy_MaskModeRedactsPattern(t *testing.T) {
 		Secrets:      NewSecrets([]string{known}),
 		MinSecretLen: 8,
 		Patterns:     buildPatterns(t),
-		PatternMode:  "mask",
+		PatternMode:  NewPatternMode("mask"),
 		UpstreamURL:  upstream.URL,
 		Audit:        sink,
 	})
