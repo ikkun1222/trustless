@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `go` directive in go.mod raised to 1.26.6 (requires Go 1.26.6+ to build).
 - CI now runs `govulncheck` and reports test coverage on every push.
+- `trustless version` now reports the build-embedded version; release
+  binaries embed the tag via ldflags (`-X main.version=vX.Y.Z`) instead of a
+  hardcoded string. `go build` without ldflags reports `dev`.
 
 ## [0.5.0] - 2026-08-14
 

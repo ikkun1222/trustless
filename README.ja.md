@@ -54,6 +54,10 @@ cd trustless && go build -o trustless .
 go install github.com/ikkun1222/trustless@latest
 ```
 
+> 注: `go build` を ldflags 無しで実行すると `trustless dev` と表示されます。
+> リリースバイナリは `-ldflags "-X main.version=vX.Y.Z"` でバージョンを埋め込みます
+> （リリースパイプラインと `make build VERSION=vX.Y.Z` は自動で行います）。
+
 ### リリース成果物の検証
 
 v0.5.1 以降、すべてのリリース成果物（バイナリ・SHA256SUMS・SBOM）は

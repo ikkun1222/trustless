@@ -3,7 +3,9 @@
 .PHONY: build test vet fmt fmt-check lint complexity secrets-check audit coverage validate-plugin check clean
 
 build:
-	go build -o trustless .
+	go build -ldflags "-X main.version=$(VERSION)" -o trustless .
+
+# VERSION 未指定時は dev（リリースは tag から注入: make VERSION=v0.5.1 build）
 
 test:
 	go test -v -race ./...

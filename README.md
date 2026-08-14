@@ -58,6 +58,10 @@ Or install directly:
 go install github.com/ikkun1222/trustless@latest
 ```
 
+> Note: `go build` without ldflags reports `trustless dev`. Release binaries
+> embed the version via `-ldflags "-X main.version=vX.Y.Z"` (the release
+> pipeline and `make build VERSION=vX.Y.Z` do this automatically).
+
 ### Verifying release artifacts
 
 Starting with v0.5.1, every release artifact (binaries, SHA256SUMS, SBOM) is

@@ -22,6 +22,10 @@ import (
 	"github.com/ikkun1222/trustless/internal/setup"
 )
 
+// version はビルド時に -ldflags "-X main.version=vX.Y.Z" で注入される。
+// ローカルビルド時は "dev"（リリースビルドでは必ず注入すること）。
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -97,7 +101,7 @@ func dispatch(cmd string, args []string, be backend.Backend, cfg *config.Config,
 	case "config":
 		runConfig(args, cfg, cfgPath)
 	case "version":
-		fmt.Println("trustless v0.5.0")
+		fmt.Printf("trustless %s\n", version)
 	case "completion":
 		runCompletion(args)
 	case "doctor":

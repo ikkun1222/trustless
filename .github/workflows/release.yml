@@ -19,9 +19,10 @@ jobs:
       - name: Build binaries
         run: |
           mkdir -p dist
+          VERSION="$GITHUB_REF_NAME"   # e.g. v0.5.1
           for target in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64"; do
             set -- $target
-            GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -o "dist/trustless-$1-$2" .
+            GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o "dist/trustless-$1-$2" .
           done
           # チェックサムはファイル名のみの形式（dist/ プレフィックスなし）で検証可能にする
           (cd dist && sha256sum trustless-* > SHA256SUMS)
