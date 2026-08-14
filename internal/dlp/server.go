@@ -160,12 +160,23 @@ func LoadSecretsFromBackend(be backend.Backend, minLen int) ([]string, error) {
 // its local prefix, forwards the remainder to the upstream (joining the
 // upstream's base path), and masks secrets in the request body. The secrets
 // set is shared across routes and may be hot-swapped at runtime.
+//
+// The pattern layer is wired from the bundled rules.toml (keyword → RE2 →
+// entropy). Any load failure is fatal (fail-closed): the proxy never starts
+// with a partially armed rule set. This is provisional wiring for S3, which
+// replaces it with the config's rules_file / pattern_mode.
 func BuildHandler(cfg *dlpconfig.Config, secrets *dlpproxy.Secrets, logger *log.Logger, sink audit.Sink) http.Handler {
+	patterns, err := redact.DefaultPatterns()
+	if err != nil {
+		logger.Printf("pattern rules: %v", err)
+		panic("dlp: pattern rules: " + err.Error())
+	}
 	mux := http.NewServeMux()
 	for _, r := range cfg.Routes {
 		p := dlpproxy.New(dlpproxy.Options{
 			Secrets:      secrets,
 			MinSecretLen: cfg.MinSecretLen,
+			Patterns:     patterns,
 			UpstreamURL:  r.URL,
 			Logger:       logger,
 			Audit:        sink,

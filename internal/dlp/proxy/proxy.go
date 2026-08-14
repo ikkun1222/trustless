@@ -26,6 +26,14 @@ type Options struct {
 	// MinSecretLen is the minimum secret length considered (shorter values
 	// are ignored to avoid false positives in ordinary prose).
 	MinSecretLen int
+	// Patterns is the compiled gitleaks-compatible rule set for the
+	// pattern-based layer (keyword → RE2 → entropy). A nil value keeps the
+	// legacy behavior: known-value substring scanning only.
+	Patterns *redact.PatternSet
+	// PatternMode is the action applied to pattern matches: "mask" (the
+	// default; anything else also masks for now) or, from S3 on,
+	// "block". Reserved for the config wiring landing in the next step.
+	PatternMode string
 	// UpstreamURL is the base URL requests are forwarded to.
 	UpstreamURL string
 	// Logger receives scan diagnostics. Nil disables logging.
@@ -35,11 +43,13 @@ type Options struct {
 
 // Proxy is a reverse proxy that masks secrets in outbound request bodies.
 type Proxy struct {
-	rp      *httputil.ReverseProxy
-	secrets *Secrets
-	minLen  int
-	logger  *log.Logger
-	audit   audit.Sink
+	rp          *httputil.ReverseProxy
+	secrets     *Secrets
+	minLen      int
+	patterns    *redact.PatternSet
+	patternMode string
+	logger      *log.Logger
+	audit       audit.Sink
 }
 
 // New builds a Proxy forwarding to upstreamURL, masking any secret value
@@ -52,10 +62,12 @@ func New(opts Options) http.Handler {
 		panic("proxy: invalid upstream URL: " + err.Error())
 	}
 	p := &Proxy{
-		secrets: opts.Secrets,
-		minLen:  opts.MinSecretLen,
-		logger:  opts.Logger,
-		audit:   opts.Audit,
+		secrets:     opts.Secrets,
+		minLen:      opts.MinSecretLen,
+		patterns:    opts.Patterns,
+		patternMode: opts.PatternMode,
+		logger:      opts.Logger,
+		audit:       opts.Audit,
 	}
 	if p.secrets == nil {
 		p.secrets = NewSecrets(nil)
@@ -88,7 +100,9 @@ func (p *Proxy) scanBody(req *http.Request) {
 	}
 	_ = req.Body.Close()
 
-	masked, changed := redact.ScanAndRedact(string(raw), p.secrets.Snapshot(), p.minLen)
+	// Layer 1 (known values) then layer 2 (patterns). A nil pattern set
+	// keeps the legacy behavior exactly.
+	masked, changed := redact.ScanAll(string(raw), p.secrets.Snapshot(), p.minLen, p.patterns)
 	if changed {
 		p.logf("scan: redacted secrets in %s %s", req.Method, req.URL.Path)
 		if p.audit != nil {
