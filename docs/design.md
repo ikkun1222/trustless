@@ -143,7 +143,7 @@ Lark は refresh token を **7 日で失効**させる（`refresh_token_expires_
 | `proxy.inject` | 注入ルール適用時（header/query） | serve/proxy 単体 |
 | `proxy.deny` | allowlist 違反 403 | 実機確認（allowlist config で gmail 拒否） |
 | `run.spawn` | 子プロセス起動 | 値は含めない |
-| `dlp.redact` | ボディの既知シークレット置換時 | detail=`redacted=true` |
+| `dlp.redact` | ボディのシークレット/パターン置換時 | detail=`redacted=true` / `patterns=hit&mode=log`（log モードのパターン検出時） |
 | `oauth.refresh` | refresh 成功 | detail=`provider=<name>` |
 | `oauth.fail` | refresh 失敗（invalid_grant 以外） | |
 | `oauth.reauth_required` | invalid_grant → 再認可必要 | `oauth status` の reauth_required と一致 |
@@ -167,6 +167,35 @@ tail -f ~/.local/state/trustless/audit.jsonl
 # logrotate: リネーム後 SIGHUP で reopen
 mv audit.jsonl audit.jsonl.1 && kill -HUP $(pgrep -f 'trustless serve')
 ```
+
+## DLP パターン第2層（gitleaks 互換・2026-08-14）
+
+`internal/dlp/redact` は 2 層でリクエスト本文をマスクする（`redact.ScanAll`）:
+
+1. **第1層・既知値**: backend（pass/bitwarden）からロードした秘密リストの substring スキャン（従来の `ScanAndRedact`・FP ゼロ）
+2. **第2層・パターン**: gitleaks 互換ルール（`internal/dlp/redact/rules.toml`・40 ルール・`//go:embed` 同梱）。ルールごとに **keyword プリフィルタ → RE2 regex → Shannon entropy 閾値**（デフォルト 3.5・ルールの `entropy` で上書き）の 3 段で FP を抑制。`secret_group` 指定時は該当キャプチャのみ置換、entropy は指定グループの値で計測（S2 実装時の改善・gitleaks セマンティクス準拠）
+
+### ライセンス
+
+ルールは [gitleaks](https://github.com/gitleaks/gitleaks)（MIT・Copyright (c) 2019 Zachary Rice）由来。`LICENSE.gitleaks`（MIT 全文）・`NOTICE`・rules.toml ヘッダで帰属。**llm-prism は LICENSE 無しのため非採用**（2026-08-14 調査）。抽出は `scripts/extract_dlp_rules.py`（tomllib・再現可能）。
+
+### config（dlp config JSON・追加フィールド）
+
+| フィールド | 型 | 意味 |
+|---|---|---|
+| `rules_file` | string | 外部 gitleaks 互換 rules TOML のパス。空 = 同梱。`~` 展開対応。存在しない/不正は**起動失敗**（fail-closed） |
+| `pattern_mode` | string | `"mask"`（デフォルト・置換）/ `"log"`（検出のみ・本文不変・audit `patterns=hit&mode=log`）。第1層は常にマスク |
+
+- 配線は `dlp.BuildPatternSet(cfg)` → `BuildHandler(cfg, secrets, patterns, patternMode, logger, sink)` の 1 点。`trustless dlp start` と `trustless serve` の両方が同じ経路（serve.go 実測 2026-08-14）
+- **変更反映はプロセス再起動**（config は起動時読込。定期/SIGHUP リロードは秘密のみ）
+- `scrub-db` / `scrub-text` は既知値のみ（パターン層は対象外・YAGNI）
+
+### 実測知見（2026-08-14・スモーク + 本番 log 投入）
+
+- mask モード: OpenAI 新形式 / GitHub PAT / JWT を実リクエストで `<redacted>` 化確認
+- log モード: 本文不変 + `scan: pattern detected (mode=log)` + audit イベント発行を確認
+- **JWT 検出には終端デリミタが必要**（gitleaks の regex 仕様: 空白/引用符/改行/`$`。`.` や `,` 直後は非検出）— 実運用の JSON 本文では通常クォート/空白で終端されるため実害なし
+- generic-api-key ルールは高エントロピーな env 変数名（`process.env.API_KEY` 等）を検出し得る → コード多めの本文で FP が出る可能性。**log モード先行投入の理由**（FP 観察後に mask 切替）
 
 ## Command Reference
 

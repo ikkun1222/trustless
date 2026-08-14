@@ -39,6 +39,19 @@ Some credentials are OAuth entries (stored as `type=oauth` JSON). They resolve l
 
 trustless records structured audit events as JSONL — `proxy.inject` / `proxy.deny` / `run.spawn` / `dlp.redact` / `oauth.refresh` / `oauth.fail` / `oauth.reauth_required`. **Events never contain token or secret values** — only key names, hosts, and verdicts. The serve process writes to journald (or stdout JSONL); standalone commands append to `~/.local/state/trustless/audit.jsonl` (0600). View with `journalctl --user -u trustless | grep '"event"'` or `tail -f ~/.local/state/trustless/audit.jsonl`.
 
+## DLP Pattern Layer (gitleaks-compatible, 2026-08-14)
+
+The outbound DLP (`trustless dlp start` / `trustless serve`) redacts in two layers:
+
+1. **Layer 1 — known values**: substring scan of the secret list loaded from the backend (pass/bitwarden). Zero false positives.
+2. **Layer 2 — patterns**: gitleaks-compatible rules (40 bundled in `internal/dlp/redact/rules.toml` via `//go:embed`; MIT attribution to gitleaks, see `LICENSE.gitleaks` / `NOTICE`). Each rule: keyword pre-filter → RE2 regex → Shannon entropy threshold (default 3.5, per-rule override via the `entropy` field). Detects unregistered secrets (OpenAI/Anthropic/GitHub/AWS/GCP/Slack/Stripe keys, JWT, private keys, ...).
+
+Config (dlp config JSON):
+- `rules_file`: external gitleaks-compatible rules TOML path (empty = bundled). `~` is expanded. Startup fails if missing/invalid (fail-closed).
+- `pattern_mode`: `"mask"` (default, redacts pattern matches) or `"log"` (detects only — body unchanged, audit event `dlp.redact` with `detail="patterns=hit&mode=log"`). Layer 1 always masks regardless of mode.
+
+Both `trustless dlp start` and `trustless serve` build the pattern set from the same config (`dlp.BuildPatternSet`). Changes to `rules_file` / `pattern_mode` require a process restart (config is read at startup; periodic/SIGHUP reload refreshes secrets only). The `scrub-db` / `scrub-text` commands remain known-value only.
+
 ## Running Commands with Credentials
 
 To run a command with credential injection:

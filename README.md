@@ -312,6 +312,8 @@ trustless dlp scrub-text <path>   [--apply]                   # scan / scrub sec
 - **Secrets load through the shared backend** (`backend.Values`); the former bitwardenloader/passstore are gone
 - **fail-closed**: startup aborts if secrets cannot be loaded; a failed reload keeps the previous set and logs a warning (fail-safe)
 - **Hot reload**: periodic refresh per `secrets_refresh_interval` + immediate reload on SIGHUP
+- **Two-layer redaction** (2026-08-14): Layer 1 = known-value substring scan (zero false positives); Layer 2 = gitleaks-compatible pattern rules (API key formats, JWT, private keys, etc.) with keyword pre-filter → RE2 regex → Shannon entropy threshold (default 3.5, per-rule override). Pattern rules are bundled in `internal/dlp/redact/rules.toml` (40 rules, `//go:embed`), derived from [gitleaks](https://github.com/gitleaks/gitleaks) (MIT, Copyright (c) 2019 Zachary Rice — see `LICENSE.gitleaks` / `NOTICE`)
+- **New config fields**: `rules_file` (path to an external gitleaks-compatible rules TOML; empty = bundled rules) / `pattern_mode` (`"mask"` = redact pattern matches, `"log"` = detect only, body unchanged, audit event with `detail="patterns=hit&mode=log"`). Changes require a process restart (config is read at startup; hot reload refreshes secrets only)
 - The former dlp-proxy repository is frozen (2026-08-13); `trustless dlp` is its replacement
 
 ### `trustless setup` — First-Time Setup Wizard
