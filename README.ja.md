@@ -1,5 +1,7 @@
 # trustless — AIエージェント向けCredential Broker CLI
 
+[English](README.md) | **日本語**
+
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ikkun1222/trustless/actions/workflows/ci.yml/badge.svg)](https://github.com/ikkun1222/trustless/actions/workflows/ci.yml)
@@ -20,6 +22,32 @@
 trustless: agent → 「GITHUB_TOKENを使って」→ broker が解決 → agent はAPI応答のみ
            ↑  agent は信頼しない caller、broker が権限の源泉
 ```
+
+### 競合比較
+
+「AIエージェントからシークレットを遠ざける」領域には複数のツールがあります。trustless は
+**サブプロセス注入と出力サニタイズ**・**統合DLP（送信リクエストの秘匿化）**・
+**既存パスワードマネージャバックエンド（pass / Bitwarden）** を、依存ゼロの単一バイナリに
+組み合わせた唯一のツールです。
+
+| | trustless | tene | vaulty | agent-secrets | secretless-ai | enject |
+|---|---|---|---|---|---|---|
+| 注入方式 | サブプロセス env + HTTP proxy | サブプロセス env | HTTP proxy + MCP | サブプロセス env（lease） | env + shell hook | サブプロセス env |
+| 既存バックエンド（pass/Bitwarden） | ✅ | ❌ 独自 vault | ❌ 独自 vault | ❌ 独自 vault | ❌ keychain/1Password | ❌ 独自 vault |
+| 出力サニタイズ | ✅ run + proxy | ❌ | ✅ | ❌ | ❌ | ❌ |
+| DLP（送信秘匿化） | ✅ 統合 | ❌ | 一部（request） | ❌ | ❌ | ❌ |
+| OAuth トークン管理 | ✅（google/lark, refresh） | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 監査ログ（構造化） | ✅ | ❌ | ✅ file | ✅ append-only | ❌ | ❌ |
+| Agent スキル同梱 | ✅ 4種 | ✅ context files | MCP のみ | ✅ skill | ✅ rules | ❌ |
+| 依存関係 | **0（単一バイナリ）** | Go static | Go static | Go static | npm/npx | Go static |
+| ライセンス | MIT | MIT | MIT | MIT | Apache-2.0 | MIT |
+
+*tene / vaulty / agent-secrets / secretless-ai / enject は 2026年8月時点の比較。*
+
+実務上の違い: tene や enject は「エージェントが `.env` を読めない」ことを解決します。
+trustless はさらに「コマンド実行時にキーを**見せない**」（出力サニタイズ）と
+「エージェントが API を呼ぶときにマシン外へキーが漏れない」（DLP）も解決します。
+すでに pass や Bitwarden を使っているなら移行は不要 — trustless は既存ストアを読みます。
 
 ## インストール
 
@@ -144,6 +172,83 @@ trustless/
 ```json
 {"key": "github_token", "value": "ghp_..."}
 ```
+
+### `trustless oauth` — OAuth 認証情報管理
+
+Google / Lark などのプロバイダ向けに OAuth 認証情報（RFC 8628 デバイスフロー + refresh grant）を管理します。`trustless oauth login` はデバイス認可フローを実行し、得られたトークンを**コンパクトな単一行 JSON エントリ**（`type=oauth`）として認証情報バックエンドに保存します。このエントリは他の認証情報と同じように解決され — `trustless run -s <key>` / `trustless proxy` は有効なアクセストークンを返し、期限切れ時は自動でリフレッシュします。
+
+| サブコマンド | 説明 | 例 |
+|------------|-------------|---------|
+| `login <provider> <key>` | デバイスフローログイン。OAuth エントリを保存 | `trustless oauth login google api/google` |
+| `refresh <key>` | OAuth エントリを強制リフレッシュ（キャッシュ無視） | `trustless oauth refresh api/google` |
+| `status <key>` | エントリの状態を表示（`valid` / `expired` / `reauth_required`） | `trustless oauth status api/google` |
+| `providers` | 設定済みプロバイダ一覧 | `trustless oauth providers` |
+
+`login` は確認 URL を stdout に出力し、ユーザーの承認をポーリングします:
+
+```bash
+$ trustless oauth login google api/google
+https://oauth2.googleapis.com/device/code?user_code=ABCD-1234   # ブラウザで開く
+{"key":"api/google","provider":"google","expires_at":"2026-08-13T12:00:00Z"}
+```
+
+`refresh` は期限切れを待たずにアクセストークンを強制リフレッシュします。アクセストークンの値が出力されることはありません。`status` はトークンが有効な間 `valid`、リフレッシュトークンが失効している場合（`invalid_grant`）`reauth_required` を報告します:
+
+```bash
+$ trustless oauth status api/google
+{"key":"api/google","provider":"google","expires_at":"...","status":"valid"}
+```
+
+**設定（`[oauth.providers]`）:** プロバイダのトークン/デバイスエンドポイントと認証情報を定義します。組み込みの `google` と `lark` 定義は以下のエンドポイントが同梱されており、`client_id` / `client_secret`（プロバイダの**開発者コンソール**でアプリ登録）と追加スコープを埋めるだけで使えます:
+
+```toml
+[oauth.providers.google]
+client_id = "YOUR_CLIENT_ID"
+client_secret = "YOUR_CLIENT_SECRET"
+scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+[oauth.providers.lark]
+client_id = "YOUR_CLIENT_ID"
+client_secret = "YOUR_CLIENT_SECRET"
+# scopes 未設定時は既定の offline_access が使われる（refresh token 取得に必須）
+```
+
+| プロバイダ | デバイス認可エンドポイント | トークンエンドポイント | デバイス認証 | トークンリクエスト |
+|----------|-------------------------------|----------------|-------------|---------------|
+| `google` | `https://oauth2.googleapis.com/device/code` | `https://oauth2.googleapis.com/token` | `body`（form body に client_secret） | `form` |
+| `lark` | `https://accounts.larksuite.com/oauth/v1/device_authorization` | `https://open.larksuite.com/open-apis/authen/v2/oauth/token` | `basic`（Authorization header） | `json`（Lark code-style 応答） |
+
+`client_id` / `client_secret` はプロバイダの開発者コンソール（Google Cloud Console / Lark Open Platform）で登録したものを使います — 絶対にコミットしないでください。バックエンドに保存されるのはトークンのみで、クライアント認証情報は保存されません。
+
+### `trustless audit` — 構造化監査ログ
+
+すべてのイベント（proxy 注入/拒否、run 起動、DLP 秘匿化、OAuth リフレッシュ/失敗/再認証）が JSONL で記録されます。**イベントにトークンやシークレットの値が現れることはありません** — キー名・ホスト・判定・最小限の詳細のみです。
+
+| シンク | 場所 | デフォルト |
+|------|-------|---------|
+| `journald` | serve（stdout JSONL → systemd journald） | serve |
+| `file` | append-only `~/.local/state/trustless/audit.jsonl`（0600、logrotate 用に SIGHUP で再オープン） | run / proxy / oauth |
+| `off` | 破棄 | — |
+
+```toml
+[audit]
+sink = "file"        # "journald" | "file" | "off"（未設定はコマンド別デフォルト）
+file = "~/.local/state/trustless/audit.jsonl"
+buffer = 1024
+```
+
+```bash
+$ journalctl --user -u trustless | grep '"event"'
+{"ts":"...","event":"proxy.inject","key":"edinet","host":"api.edinet-fsa.go.jp","verdict":"inject","detail":"header=Ocp-Apim-Subscription-Key"}
+{"ts":"...","event":"oauth.refresh","key":"iria/api/lark-oauth","verdict":"refresh","detail":"provider=lark"}
+```
+
+イベント: `proxy.inject` / `proxy.deny` / `run.spawn` / `dlp.redact` / `oauth.refresh` / `oauth.fail` / `oauth.reauth_required`。
+
+**注意:**
+- アクセストークンはメモリにキャッシュされます（有効期限から60秒の安全マージンを引いた期間）。期限切れ時は `Resolve` で自動リフレッシュされます。
+- プロバイダがリフレッシュトークンをローテーションする場合（Lark）、更新エントリは **CAS ガード**付きで書き戻されるため、並行書き込みで上書きされることはありません。
+- `invalid_grant`（リフレッシュトークン失効）はリトライされません — 再認証するには `trustless oauth login` を再実行してください。
 
 ### `trustless run` — サブプロセス認証情報注入（中核機能）
 
