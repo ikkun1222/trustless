@@ -1,6 +1,6 @@
 # trustless — Credential Broker CLI for AI Agents
 
-**English** | [日本語](README.ja.md)
+**English** | [日本語](README.ja.md) | [简体中文](README.zh.md)
 
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
