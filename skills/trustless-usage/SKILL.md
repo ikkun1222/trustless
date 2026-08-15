@@ -134,6 +134,30 @@ trustless doctor --json    # Structured JSON output
 trustless doctor --fix     # Auto-resolve issues
 ```
 
+## Scrubbing Persisted Secrets
+
+If secrets may have leaked into agent session DBs, logs, or dumps, scan and
+clean them with the DLP scrub commands (same two-layer redaction as the live
+proxy — known values + gitleaks-compatible patterns):
+
+```
+trustless dlp scrub-db  <path-to-sqlite>             # dry-run: report hits only
+trustless dlp scrub-db  <path-to-sqlite> --apply     # write the replacements
+trustless dlp scrub-db  <path-to-sqlite> --apply --backup  # keep a .bak copy first
+trustless dlp scrub-text <file-or-dir>               # dry-run on text files/dirs
+trustless dlp scrub-text <file-or-dir> --apply       # scrub in place
+```
+
+Rules:
+- Default is **dry-run** — always run without `--apply` first to see the report.
+- `scrub-db` rebuilds SQLite FTS indexes and runs `VACUUM` so no physical
+  remnants survive; `--backup` copies the DB before writing.
+- Both honor the DLP config (`secrets_source`, `pattern_mode`, `rules_file`,
+  `pattern_disabled`) — `pattern_mode: "log"` reports pattern hits without
+  masking, known values are always masked.
+- Typical targets: agent session DBs (`~/.local/state/.../sessions.db`), log
+  files, `.env` backups, shell history dumps.
+
 ## Security Notes
 
 - trustless runs on `127.0.0.1` only (proxy mode) — no network exposure
