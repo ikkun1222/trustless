@@ -327,6 +327,20 @@ trustless dlp scrub-text <path>   [--apply]                   # テキスト / �
 - **ホットリロード**: `secrets_refresh_interval` の定期リロード + SIGHUP で即時リロード
 - 旧 dlp-proxy リポジトリは凍結（2026-08-13・`trustless dlp` に統合）
 
+**Scrub コマンド** — すでにディスクに残ってしまったシークレット（エージェントのセッションDB・ログ・ダンプ）を、稼働中のプロキシと同じ二層脱敏で掃除します:
+
+```bash
+trustless dlp scrub-db  ~/.local/state/hermes/sessions.db            # dry-run: スキャンのみ
+trustless dlp scrub-db  ~/.local/state/hermes/sessions.db --apply    # 変更を書き込む
+trustless dlp scrub-db  ~/.local/state/hermes/sessions.db --apply --backup  # 先に .bak コピーを残す
+trustless dlp scrub-text ~/.hermes/sessions --apply                  # テキストファイル/ディレクトリを掃除
+```
+
+- **デフォルトは dry-run**: どちらのコマンドもテーブル/ファイルごとのヒット数を表示するだけで書き込みません。実際に掃除するには `--apply` を追加。`scrub-db` はさらに `--backup`（書き込み前に `<db>.bak` へコピー）と `--min-len`（最小シークレット長、デフォルト8）を受け付けます。
+- **`scrub-db`** は SQLite データベースを対象に: Layer 1 の既知値置換 + Layer 2 のパターンマスクを行い、その後 **FTS 仮想テーブルを再構築**し `VACUUM` を実行するため、ファイルに物理的な残骸が残りません（テストで検証済み）。
+- **`scrub-text`** はファイル/ディレクトリツリー（エージェントの `sessions/`・ログ・ダンプ）を同じ二層脱敏で走査します。
+- どちらも DLP 設定の `secrets_source`（pass / bitwarden）からシークレットを読み込み、`pattern_mode` を尊重します — `"log"` はマスクせずヒット数だけ数え、`"mask"` はその場で秘匿化します。
+
 ### `trustless setup` — 初回セットアップウィザード
 
 初回セットアップを自動化する対話型ウィザード:

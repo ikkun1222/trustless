@@ -375,6 +375,20 @@ trustless dlp scrub-text <path>   [--apply]                   # scan / scrub sec
 - **Hot reload (serve)**: `trustless serve` re-applies `pattern_mode` / `pattern_disabled` / `rules_file` on every reload (SIGHUP via `kill -HUP $(pgrep -f 'trustless serve')` or the 10-minute periodic refresh) — config is re-read, the pattern set is atomically swapped (`PatternSet.Replace`), failures keep the previous state (fail-safe). Standalone `trustless dlp start` reads them at startup only
 - The former dlp-proxy repository is frozen (2026-08-13); `trustless dlp` is its replacement
 
+**Scrub commands** clean up secrets that already persisted on disk — agent session DBs, logs, dumps — using the same two-layer redaction as the live proxy:
+
+```bash
+trustless dlp scrub-db  ~/.local/state/hermes/sessions.db            # dry-run: scan only
+trustless dlp scrub-db  ~/.local/state/hermes/sessions.db --apply    # write changes
+trustless dlp scrub-db  ~/.local/state/hermes/sessions.db --apply --backup  # keep a .bak copy first
+trustless dlp scrub-text ~/.hermes/sessions --apply                  # scan/scrub text files & dirs
+```
+
+- **Default is dry-run**: both commands scan and print per-table/per-file hit counts without writing. Add `--apply` to actually scrub; `scrub-db` additionally accepts `--backup` (copy DB to `<db>.bak` before writing) and `--min-len` (minimum secret length, default 8).
+- **`scrub-db`** operates on SQLite databases: Layer 1 known-value replacement + Layer 2 pattern masking, then **rebuilds FTS virtual tables** and runs `VACUUM` so no physical remnants survive in the file (verified by tests).
+- **`scrub-text`** walks a file or directory tree (agent `sessions/`, logs, dumps) with the same two-layer redaction.
+- Both load secrets through the DLP config's `secrets_source` (pass / bitwarden) and honor `pattern_mode` — `"log"` counts hits without masking, `"mask"` redacts in place.
+
 ### `trustless setup` — First-Time Setup Wizard
 
 Interactive wizard that automates the full first-time setup:

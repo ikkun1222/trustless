@@ -364,6 +364,20 @@ trustless dlp scrub-text <path>   [--apply]                   # 扫描/清洗文
 - **热重载（serve）**：`trustless serve` 在每次重载时重新应用 `pattern_mode` / `pattern_disabled` / `rules_file`（通过 `kill -HUP $(pgrep -f 'trustless serve')` 或 10 分钟周期刷新）——配置被重新读取，模式集原子替换（`PatternSet.Replace`），失败时保留上一状态（fail-safe）。独立 `trustless dlp start` 仅在启动时读取
 - 原 dlp-proxy 仓库已冻结（2026-08-13）；`trustless dlp` 是其替代品
 
+**Scrub 命令** —— 清理已经残留在磁盘上的密钥（代理会话数据库、日志、转储），使用与在线代理相同的双层脱敏：
+
+```bash
+trustless dlp scrub-db  ~/.local/state/hermes/sessions.db            # dry-run：仅扫描
+trustless dlp scrub-db  ~/.local/state/hermes/sessions.db --apply    # 写入更改
+trustless dlp scrub-db  ~/.local/state/hermes/sessions.db --apply --backup  # 先保留 .bak 副本
+trustless dlp scrub-text ~/.hermes/sessions --apply                  # 清理文本文件/目录
+```
+
+- **默认是 dry-run**：两个命令都只打印每个表/文件的命中数而不写入。实际清理需加 `--apply`；`scrub-db` 还支持 `--backup`（写入前复制到 `<db>.bak`）和 `--min-len`（最小密钥长度，默认 8）。
+- **`scrub-db`** 针对 SQLite 数据库：第 1 层已知值替换 + 第 2 层模式掩蔽，随后**重建 FTS 虚拟表**并执行 `VACUUM`，确保文件中不残留物理痕迹（已由测试验证）。
+- **`scrub-text`** 以相同的双层脱敏遍历文件或目录树（代理的 `sessions/`、日志、转储）。
+- 两者都通过 DLP 配置的 `secrets_source`（pass / bitwarden）加载密钥，并遵循 `pattern_mode` —— `"log"` 只计数不掩蔽，`"mask"` 就地脱敏。
+
 ### `trustless setup` — 首次设置向导
 
 自动化完整首次设置的交互式向导：
