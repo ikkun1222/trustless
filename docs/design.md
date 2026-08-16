@@ -390,7 +390,7 @@ patterns = [
 4. **Minimal attack surface**
    - Proxy listens on `127.0.0.1` by default (not exposed)
    - Unix socket mode available (file permission control)
-   - Single binary, no runtime dependencies beyond `pass`+`gpg`
+   - Single static binary, no runtime dependencies (reads your existing `pass` + `gpg` store)
 
 4. **No credential persistence in the broker process**
    - Credentials are resolved on-demand, released after subprocess exits
@@ -551,7 +551,7 @@ Implements:
 
 ## Development Principles
 
-1. **Dependencies**: Zero external dependencies for the core credential path. CLI framework (`cobra`) and TOML lib are the only allowed runtime deps.
+1. **Dependencies**: One external dependency — `go-toml/v2` for TOML parsing (config file); everything else is Go standard library. Binary is a single static build with no runtime dependencies.
 2. **Testing**: All redaction patterns tested against known credential formats. Backend operations tested with mock GPG/pass.
 3. **Error handling**: Structured errors with exit codes (0=success, 1=general error, 2=credential not found, 3=subprocess error, 4=config error).
 4. **Security**: Failing closed — if credential resolution fails, the subprocess is not started. If scanning fails, output is blocked.
