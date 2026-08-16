@@ -32,7 +32,8 @@ trustless:    agent → says "use GITHUB_TOKEN" → broker resolves → agent ge
 The "keep secrets away from AI agents" space has several tools. trustless is the
 only one that combines **subprocess injection with output sanitization**,
 **integrated DLP** (outbound request redaction), and **existing password-manager
-backends** (pass / Bitwarden) in a single zero-dependency binary.
+backends** (pass / Bitwarden) in a single static binary — one vetted Go
+module, no runtime dependencies.
 
 | | trustless | tene | vaulty | agent-secrets | secretless-ai | enject |
 |---|---|---|---|---|---|---|
@@ -43,7 +44,7 @@ backends** (pass / Bitwarden) in a single zero-dependency binary.
 | OAuth token management | ✅ (google/lark, refresh) | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Audit log (structured) | ✅ | ❌ | ✅ file | ✅ append-only | ❌ | ❌ |
 | Agent skills bundled | ✅ 4 | ✅ context files | MCP only | ✅ skill | ✅ rules | ❌ |
-| Dependencies | **0 (single binary)** | Go static | Go static | Go static | npm/npx | Go static |
+| Dependencies | **1 (go-toml/v2, pure Go)** | Go static | Go static | Go static | npm/npx | Go static |
 | License | MIT | MIT | MIT | MIT | Apache-2.0 | MIT |
 
 *tene / vaulty / agent-secrets / secretless-ai / enject are compared as of Aug 2026.*
@@ -579,7 +580,7 @@ Configure via `trustless config set backend <name>`.
    - Proxy listens on `127.0.0.1` by default (not exposed to the network)
    - Unix socket mode available for file permission control
    - MITM proxy generates per-hostname ephemeral certificates (24h validity)
-   - Single binary with zero runtime dependencies beyond `pass` + `gpg` (the `bitwarden` backend additionally requires the `bw` CLI)
+   - Single static binary, no runtime dependencies (reads your existing `pass` + `gpg` store; the `bitwarden` backend additionally requires the `bw` CLI)
 
 6. **No credential persistence in the broker process**
    - Credentials are resolved on-demand and released after the subprocess exits
@@ -656,9 +657,17 @@ go test ./...
 
 ### Dependencies
 
-trustless has a single external dependency — the rest is all Go standard library:
+trustless builds as a single static binary with no runtime dependencies. The
+Go standard library covers nearly everything; the one exception is TOML
+parsing, which the standard library doesn't provide. Rather than hand-rolling
+a parser (unvetted code is a bigger supply-chain risk than a vetted module),
+trustless uses [`github.com/pelletier/go-toml/v2`](https://github.com/pelletier/go-toml/v2)
+— the project's only external module. It's pure Go (no cgo, links statically
+with the rest of the binary), actively maintained, and fuzz-tested. The
+version is pinned via `go.sum`, with Dependabot and `govulncheck` monitoring
+it.
 
-- `github.com/pelletier/go-toml/v2` — TOML config file parsing
+- `github.com/pelletier/go-toml/v2` — TOML config file parsing (the only external module)
 
 ### Exit Codes
 

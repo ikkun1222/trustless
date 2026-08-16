@@ -27,7 +27,7 @@ trustless: agent → 「GITHUB_TOKENを使って」→ broker が解決 → agen
 
 「AIエージェントからシークレットを遠ざける」領域には複数のツールがあります。trustless は
 **サブプロセス注入と出力サニタイズ**・**統合DLP（送信リクエストの秘匿化）**・
-**既存パスワードマネージャバックエンド（pass / Bitwarden）** を、依存ゼロの単一バイナリに
+**既存パスワードマネージャバックエンド（pass / Bitwarden）** を、単一静的バイナリ（外部モジュールは go-toml/v2 の1つのみ・ランタイム不要）に
 組み合わせた唯一のツールです。
 
 | | trustless | tene | vaulty | agent-secrets | secretless-ai | enject |
@@ -39,7 +39,7 @@ trustless: agent → 「GITHUB_TOKENを使って」→ broker が解決 → agen
 | OAuth トークン管理 | ✅（google/lark, refresh） | ❌ | ❌ | ❌ | ❌ | ❌ |
 | 監査ログ（構造化） | ✅ | ❌ | ✅ file | ✅ append-only | ❌ | ❌ |
 | Agent スキル同梱 | ✅ 4種 | ✅ context files | MCP のみ | ✅ skill | ✅ rules | ❌ |
-| 依存関係 | **0（単一バイナリ）** | Go static | Go static | Go static | npm/npx | Go static |
+| 依存関係 | **1（go-toml/v2, pure Go）** | Go static | Go static | Go static | npm/npx | Go static |
 | ライセンス | MIT | MIT | MIT | MIT | Apache-2.0 | MIT |
 
 *tene / vaulty / agent-secrets / secretless-ai / enject は 2026年8月時点の比較。*
@@ -532,7 +532,7 @@ type Backend interface {
    - プロキシはデフォルトで `127.0.0.1` のみ待受
    - Unixソケットモード対応（ファイルパーミッション制御）
    - MITMプロキシはホスト名ごとにエフェメラル証明書（24時間有効）
-   - 単一バイナリ、`pass`+`gpg` 以外のランタイム依存無し
+   - 単一静的バイナリ、ランタイム依存無し（既存の `pass`+`gpg` ストアを読む。`bitwarden` バックエンドは追加で `bw` CLI が必要）
 
 6. **ブローカープロセス内に認証情報を永続化しない**
    - 認証情報はオンデマンド解決、サブプロセス終了後に解放
@@ -601,7 +601,7 @@ go test ./...
 
 ### 依存関係
 
-trustless の外部依存は1つだけ。残りはすべて Go 標準ライブラリ:
+trustless は実行時依存ゼロの単一静的バイナリとしてビルドされます。Go 標準ライブラリでほぼ全てを賄えますが、唯一 TOML パースだけは標準ライブラリに無いため、[`github.com/pelletier/go-toml/v2`](https://github.com/pelletier/go-toml/v2) — プロジェクト唯一の外部モジュール — を使用しています。手書きパーサ（未検証コード）を抱えるより、検証済みモジュール1つの方が supply chain リスクが小さいためです。pure Go（cgo 不使用）でバイナリ本体と同様に静的リンクされ、積極的にメンテナンスされ、fuzz テスト済みです。バージョンは `go.sum` で固定され、Dependabot と `govulncheck` で監視されています。
 
 - `github.com/pelletier/go-toml/v2` — TOML設定ファイルパース
 

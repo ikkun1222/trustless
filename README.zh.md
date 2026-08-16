@@ -29,7 +29,7 @@ trustless:  agent → 说「使用 GITHUB_TOKEN」 → broker 解析 → agent �
 
 ### 竞品对比
 
-「让密钥远离 AI 代理」这个领域已有多个工具。trustless 是唯一一个把**子进程注入 + 输出脱敏**、**集成 DLP（出站请求脱敏）**、**现有密码管理器后端（pass / Bitwarden）** 组合进单一零依赖二进制的工具。
+「让密钥远离 AI 代理」这个领域已有多个工具。trustless 是唯一一个把**子进程注入 + 输出脱敏**、**集成 DLP（出站请求脱敏）**、**现有密码管理器后端（pass / Bitwarden）** 组合进单一静态二进制（仅一个外部模块 go-toml/v2 · 无运行时依赖）的工具。
 
 | | trustless | tene | vaulty | agent-secrets | secretless-ai | enject |
 |---|---|---|---|---|---|---|
@@ -40,7 +40,7 @@ trustless:  agent → 说「使用 GITHUB_TOKEN」 → broker 解析 → agent �
 | OAuth 令牌管理 | ✅（google/lark, refresh） | ❌ | ❌ | ❌ | ❌ | ❌ |
 | 审计日志（结构化） | ✅ | ❌ | ✅ file | ✅ append-only | ❌ | ❌ |
 | 随附 Agent 技能 | ✅ 4 种 | ✅ context files | 仅 MCP | ✅ skill | ✅ rules | ❌ |
-| 依赖 | **0（单一二进制）** | Go static | Go static | Go static | npm/npx | Go static |
+| 依赖 | **1（go-toml/v2, pure Go）** | Go static | Go static | Go static | npm/npx | Go static |
 | 许可证 | MIT | MIT | MIT | MIT | Apache-2.0 | MIT |
 
 *tene / vaulty / agent-secrets / secretless-ai / enject 按 2026 年 8 月状态对比。*
@@ -568,7 +568,7 @@ type Backend interface {
    - 代理默认监听 `127.0.0.1`（不暴露到网络）
    - 提供 Unix socket 模式以进行文件权限控制
    - MITM 代理按主机名生成临时证书（24h 有效期）
-   - 单一二进制，除 `pass` + `gpg` 外零运行时依赖（`bitwarden` 后端额外需要 `bw` CLI）
+   - 单一静态二进制、无运行时依赖（读取现有 `pass` + `gpg` 存储；`bitwarden` 后端额外需要 `bw` CLI）
 
 6. **broker 进程不持久化凭据**
    - 凭据按需解析，子进程退出后释放
@@ -645,7 +645,7 @@ go test ./...
 
 ### 依赖
 
-trustless 只有一个外部依赖——其余全部是 Go 标准库：
+trustless 构建为无运行时依赖的单一静态二进制。Go 标准库几乎覆盖了所有需求，唯一例外是 TOML 解析（标准库不提供）。与其手写解析器（未经验证的代码比经过验证的模块带来更大的供应链风险），trustless 使用 [`github.com/pelletier/go-toml/v2`](https://github.com/pelletier/go-toml/v2) —— 项目中唯一的外部模块。它是纯 Go（无 cgo，与二进制其他部分一样静态链接）、积极维护、经过 fuzz 测试。版本通过 `go.sum` 固定，并由 Dependabot 和 `govulncheck` 监控。
 
 - `github.com/pelletier/go-toml/v2` —— TOML 配置文件解析
 
