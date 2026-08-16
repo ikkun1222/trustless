@@ -4,6 +4,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/website-trustless--security.com-3fb950)](https://trustless-security.com)
 [![CI](https://github.com/ikkun1222/trustless/actions/workflows/ci.yml/badge.svg)](https://github.com/ikkun1222/trustless/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/ikkun1222/trustless)](https://goreportcard.com/report/github.com/ikkun1222/trustless)
 
