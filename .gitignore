@@ -5,3 +5,9 @@ opencode-task-*.md
 
 # Hermes plan files
 .hermes/
+
+# 宣伝・プロモーション関連（ローカル管理・公開対象外）
+docs/pr/
+scripts/publish_devto.py
+scripts/hn_comment_watch.py
+scripts/setup-doctor-plan.md
