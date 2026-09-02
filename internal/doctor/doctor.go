@@ -33,7 +33,7 @@ type reportGroup struct {
 	Checks []CheckResult
 }
 
-func Run(args []string) {
+func Run(args []string) int {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	fix := fs.Bool("fix", false, "Attempt to fix detected issues")
 	jsonOut := fs.Bool("json", false, "Output as JSON")
@@ -121,10 +121,40 @@ func Run(args []string) {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(all)
-		return
+		return exitCode(all)
 	}
 
+	if *fix {
+		applyFixes(all)
+	}
 	printReport(groups, all, *fix)
+	return exitCode(all)
+}
+
+// exitCode fails the gate (1) when any check is an error. Warnings and info
+// results are advisory and do not fail. This lets scripts and CI gate on
+// `trustless doctor` instead of parsing the report text.
+func exitCode(all []CheckResult) int {
+	for _, c := range all {
+		if c.Status == StatusError {
+			return 1
+		}
+	}
+	return 0
+}
+
+// applyFixes runs the fix attached to each check that has one. Checks marked
+// Fixable without a Fix (agent integrations) are skipped so --fix never
+// claims to change something it cannot.
+func applyFixes(all []CheckResult) {
+	for _, c := range all {
+		if c.Fix == nil {
+			continue
+		}
+		if err := c.Fix(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error fixing %s: %v\n", c.Name, err)
+		}
+	}
 }
 
 func printReport(groups []reportGroup, all []CheckResult, fix bool) {
