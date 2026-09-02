@@ -87,12 +87,13 @@ func TestScanEnvFiles_ErrorsOnMissingSearchPath(t *testing.T) {
 }
 
 func TestBackupEnvFiles_PreservesRelativeLayout(t *testing.T) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
+	// BackupEnvFiles mirrors paths relative to the process working directory
+	// (the dir the user runs `trustless setup` in), so pin the cwd to the
+	// fixture root. Without this the destination resolves relative to the
+	// go test package dir and can collapse back onto the source file.
 	root := t.TempDir()
-	backupDir := t.TempDir()
+	t.Chdir(root)
+	backupDir := filepath.Join(root, "backup")
 
 	paths := []string{
 		filepath.Join(root, "a", ".env"),
@@ -109,16 +110,35 @@ func TestBackupEnvFiles_PreservesRelativeLayout(t *testing.T) {
 	}
 
 	for _, p := range paths {
-		rel, err := filepath.Rel(cwd, p)
+		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			t.Fatal(err)
 		}
 		dst := filepath.Join(backupDir, rel)
-		if got, err := os.ReadFile(dst); err != nil {
+		got, err := os.ReadFile(dst)
+		if err != nil {
 			t.Fatalf("backup %s not created: %v", dst, err)
-		} else if string(got) != "K=V\n" {
+		}
+		if string(got) != "K=V\n" {
 			t.Fatalf("backup %s content = %q, want K=V", dst, got)
 		}
+	}
+}
+
+func TestScanEnvFiles_RecursesIntoNestedDirs(t *testing.T) {
+	// The walk is recursive over the given search root: any .env below it is
+	// scanned, including files that look like backup copies. Keeping backups
+	// outside the scanned tree is the caller's responsibility.
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".env"), "A=1\n")
+	writeTestFile(t, filepath.Join(root, "backup", "b", "c", ".env"), "OLD=1\n")
+
+	envFiles, err := ScanEnvFiles([]string{root})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(envFiles) != 2 {
+		t.Fatalf("found %d env files, want 2 (nested .env included): %+v", len(envFiles), envFiles)
 	}
 }
 

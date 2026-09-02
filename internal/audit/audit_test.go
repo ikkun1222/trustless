@@ -67,14 +67,15 @@ func TestFileSinkは0600で作成しJSONLを書き込む(t *testing.T) {
 
 	s.Emit(Event{TS: time.Now(), Event: ProxyInject, Key: "iria/api/xai", Verdict: VerdictInject})
 	s.Emit(Event{TS: time.Now(), Event: DlpRedact, Verdict: VerdictRedact, Detail: "changed=2"})
-	// worker が書き込むのを待つ
+	// worker が両イベントを書き込むのを待つ（Size()>0 だけで切ると
+	// 非同期 worker が1行目のみ書いた時点で読んでしまうため）
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+		if data, err := os.ReadFile(path); err == nil && strings.Count(string(data), "\n") >= 2 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("file not written within 2s")
+			t.Fatal("both events not written within 2s")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
