@@ -140,6 +140,42 @@ func TestBackupEnvFiles_RejectsPathOutsideCwd(t *testing.T) {
 	}
 }
 
+// TestBackupEnvFiles_RejectsTmpAbsolutePath demonstrates the P1-4 path
+// traversal guard end to end: an absolute .env path outside the cwd (e.g.
+// under /tmp) is refused AND nothing is written outside the backup dir.
+func TestBackupEnvFiles_RejectsTmpAbsolutePath(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	backupDir := filepath.Join(root, "backup")
+
+	outsideEnv := filepath.Join(t.TempDir(), ".env")
+	writeTestFile(t, outsideEnv, "K=V\n")
+
+	err := BackupEnvFiles([]EnvFile{{Path: outsideEnv}}, backupDir)
+	if err == nil {
+		t.Fatal("BackupEnvFiles accepted /tmp absolute path, want traversal error")
+	}
+
+	// backupDir 外にも backupDir 内にも何も書き出されていないこと。
+	var written []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, _ error) error {
+		if d != nil && !d.IsDir() {
+			written = append(written, path)
+		}
+		return nil
+	})
+	if len(written) != 0 {
+		t.Fatalf("refused backup wrote files: %v", written)
+	}
+	if _, statErr := os.Stat(filepath.Join(backupDir, outsideEnv)); !os.IsNotExist(statErr) {
+		t.Fatal("absolute source path materialized under backup dir")
+	}
+	// ソース自体は無事なこと。
+	if got, readErr := os.ReadFile(outsideEnv); readErr != nil || string(got) != "K=V\n" {
+		t.Fatalf("source altered: %q, %v", got, readErr)
+	}
+}
+
 func TestBackupEnvFiles_Mode0600(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
