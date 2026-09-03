@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -152,12 +153,21 @@ func LoadSecretsFromBackend(be backend.Backend, minLen int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	kept := vals[:0]
+	// Never alias the backend's slice (some backends reuse buffers), and
+	// honor the documented contract: deduplicated and sorted.
+	seen := make(map[string]struct{}, len(vals))
+	kept := make([]string, 0, len(vals))
 	for _, v := range vals {
-		if !redact.IsEmail(v) {
-			kept = append(kept, v)
+		if redact.IsEmail(v) {
+			continue
 		}
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		kept = append(kept, v)
 	}
+	sort.Strings(kept)
 	return kept, nil
 }
 

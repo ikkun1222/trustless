@@ -39,7 +39,9 @@ func (f *fakeSecretsBackend) Values(_ context.Context, minLen int) ([]string, er
 	if f.err != nil {
 		return nil, f.err
 	}
-	out := f.vals[:0]
+	// Copy: never alias or mutate f.vals (the old `f.vals[:0]` filter
+	// clobbered the test's own input slice).
+	var out []string
 	for _, v := range f.vals {
 		if len(v) >= minLen {
 			out = append(out, v)
@@ -50,7 +52,7 @@ func (f *fakeSecretsBackend) Values(_ context.Context, minLen int) ([]string, er
 
 // TestLoadSecretsFromBackend_ExcludesEmails verifies the shared entry point
 // drops email address values (identifiers, not credentials) but keeps every
-// other secret in the backend's deterministic (sorted) order.
+// other secret in deduplicated, sorted order (the documented contract).
 func TestLoadSecretsFromBackend_ExcludesEmails(t *testing.T) {
 	be := &fakeSecretsBackend{vals: []string{
 		"sk-secret-a-1234567890",
@@ -69,7 +71,86 @@ func TestLoadSecretsFromBackend_ExcludesEmails(t *testing.T) {
 	}
 	for i := range want {
 		if secrets[i] != want[i] {
-			t.Fatalf("secrets = %v, want %v (order preserved)", secrets, want)
+			t.Fatalf("secrets = %v, want %v (sorted order)", secrets, want)
+		}
+	}
+}
+
+// TestLoadSecretsFromBackend_DedupsAndSorts verifies unsorted input with
+// duplicates comes back deduplicated and sorted.
+func TestLoadSecretsFromBackend_DedupsAndSorts(t *testing.T) {
+	be := &fakeSecretsBackend{vals: []string{
+		"zz-secret-1234567890",
+		"mm-secret-1234567890",
+		"zz-secret-1234567890",
+		"aa-secret-1234567890",
+		"mm-secret-1234567890",
+	}}
+
+	secrets, err := LoadSecretsFromBackend(be, 8)
+	if err != nil {
+		t.Fatalf("LoadSecretsFromBackend: %v", err)
+	}
+	want := []string{"aa-secret-1234567890", "mm-secret-1234567890", "zz-secret-1234567890"}
+	if len(secrets) != len(want) {
+		t.Fatalf("secrets = %v, want %v (deduplicated)", secrets, want)
+	}
+	for i := range want {
+		if secrets[i] != want[i] {
+			t.Fatalf("secrets = %v, want %v (sorted)", secrets, want)
+		}
+	}
+}
+
+// TestLoadSecretsFromBackend_AllEmails verifies an all-email backend yields
+// an empty secret set (fail-closed callers treat this as "nothing to arm").
+func TestLoadSecretsFromBackend_AllEmails(t *testing.T) {
+	be := &fakeSecretsBackend{vals: []string{
+		"admin@example.com",
+		"user@example.org",
+	}}
+
+	secrets, err := LoadSecretsFromBackend(be, 8)
+	if err != nil {
+		t.Fatalf("LoadSecretsFromBackend: %v", err)
+	}
+	if len(secrets) != 0 {
+		t.Fatalf("secrets = %v, want empty (all emails excluded)", secrets)
+	}
+}
+
+// TestLoadSecretsFromBackend_EmptyInput verifies an empty backend yields an
+// empty (non-nil-panicking) secret set.
+func TestLoadSecretsFromBackend_EmptyInput(t *testing.T) {
+	be := &fakeSecretsBackend{}
+
+	secrets, err := LoadSecretsFromBackend(be, 8)
+	if err != nil {
+		t.Fatalf("LoadSecretsFromBackend: %v", err)
+	}
+	if len(secrets) != 0 {
+		t.Fatalf("secrets = %v, want empty", secrets)
+	}
+}
+
+// TestFakeSecretsBackend_DoesNotMutateInput verifies Values returns a copy:
+// the backend's own slice must be intact after the call.
+func TestFakeSecretsBackend_DoesNotMutateInput(t *testing.T) {
+	be := &fakeSecretsBackend{vals: []string{
+		"zz-secret-1234567890",
+		"aa-secret-1234567890",
+	}}
+	before := append([]string(nil), be.vals...)
+
+	if _, err := be.Values(context.Background(), 8); err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	if len(be.vals) != len(before) {
+		t.Fatalf("vals = %v, want %v (input slice mutated)", be.vals, before)
+	}
+	for i := range before {
+		if be.vals[i] != before[i] {
+			t.Fatalf("vals = %v, want %v (input slice mutated)", be.vals, before)
 		}
 	}
 }
