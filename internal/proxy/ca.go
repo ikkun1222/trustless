@@ -206,11 +206,22 @@ func savePEM(path string, mode os.FileMode, blockType string, der []byte) error 
 	if err != nil {
 		return err
 	}
-	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: der}); err != nil {
+	// 書き込み・Sync・Close のいずれかが失敗したら中途半端なファイルを残さ
+	// ない（破損 PEM による次回起動失敗を防ぐ）。os.Remove の成否は問わない
+	// （/dev/full 等の特殊パスでは削除自体が失敗し得る）。
+	fail := func(err error) error {
 		f.Close()
+		os.Remove(path)
 		return err
 	}
+	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: der}); err != nil {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
 	if err := f.Close(); err != nil {
+		os.Remove(path)
 		return err
 	}
 	// OpenFile は既存ファイルのモードを変えないため、明示 Chmod で矯正する。

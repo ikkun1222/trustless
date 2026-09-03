@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -216,6 +217,17 @@ func TestSavePEM_CorrectsExistingKeyMode(t *testing.T) {
 	}
 	if perm := fi.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("key mode = %04o, want 0600", perm)
+	}
+}
+
+func TestSavePEM_WriteErrorReturnsError(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/dev/full is Linux-specific")
+	}
+	// /dev/full への書き込みは ENOSPC で失敗する: 中途半端な成功にせず
+	// エラーを返すこと（部分ファイルの削除は os.Remove の成否によらず試行）。
+	if err := savePEM("/dev/full", 0o600, "PRIVATE KEY", []byte("dummy-der")); err == nil {
+		t.Fatal("savePEM to /dev/full = nil, want write error")
 	}
 }
 
