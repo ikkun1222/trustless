@@ -5,8 +5,73 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// apiKeyPattern は API キー設定の表記揺れ (apiKey / api_key / APIKEY /
+// api-key / apikey) を正規表現で正規化する。リテラル一致では変種を見逃す。
+var apiKeyPattern = regexp.MustCompile(`(?i)api[-_]?key`)
+
+// trustlessEnvAssign は TRUSTLESS_* 環境変数の実代入にマッチする
+// (export 付き・引用符付きを含む)。値が空なら未設定扱い。行単位で適用する
+// こと（\s は改行を跨ぐため (?m) 一括マッチでは空値判定が漏れる）。
+var trustlessEnvAssign = regexp.MustCompile(`^(?:export\s+)?TRUSTLESS_[A-Za-z0-9_]+\s*=\s*(.+?)\s*$`)
+
+// isCommentLine はコメント専用行を報告する。コメント内の言及は設定の証拠に
+// ならない（trustless ラッパーが有効な場合のみ clean 扱いのため）。
+func isCommentLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "#") ||
+		strings.HasPrefix(trimmed, "//") ||
+		strings.HasPrefix(trimmed, ";")
+}
+
+// hasTrustlessWrapper は非コメント行に trustless への実参照があるか報告する。
+// コメント・説明文だけの言及は clean 扱いにしない。
+func hasTrustlessWrapper(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || isCommentLine(trimmed) {
+			continue
+		}
+		if strings.Contains(trimmed, "trustless") {
+			return true
+		}
+	}
+	return false
+}
+
+// isRawCredentialLine は api_key:/token: 行に空でない非 trustless 値があるか
+// 報告する（空・引用符のみ・trustless ラッパーは raw に数えない）。
+func isRawCredentialLine(trimmed string) bool {
+	if !strings.Contains(trimmed, "api_key:") && !strings.Contains(trimmed, "token:") {
+		return false
+	}
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	val := strings.TrimSpace(parts[1])
+	return val != "" && val != `""` && val != "''" && !strings.Contains(val, "trustless")
+}
+
+// hasTrustlessEnvValue は TRUSTLESS_* に非空値が代入されているか報告する。
+func hasTrustlessEnvValue(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || isCommentLine(trimmed) {
+			continue
+		}
+		m := trustlessEnvAssign.FindStringSubmatch(trimmed)
+		if m == nil {
+			continue
+		}
+		if strings.Trim(m[1], `"'`) != "" {
+			return true
+		}
+	}
+	return false
+}
 
 type AgentDetectResult struct {
 	Name        string
@@ -120,12 +185,15 @@ func DetectOpenCode() (*AgentDetectResult, error) {
 	var rawKeys int
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, "apiKey:") && !strings.Contains(trimmed, "trustless") {
+		if trimmed == "" || isCommentLine(trimmed) {
+			continue
+		}
+		if apiKeyPattern.MatchString(trimmed) && !strings.Contains(trimmed, "trustless") {
 			rawKeys++
 		}
 	}
 
-	alreadySetup := bytes.Contains(data, []byte("trustless"))
+	alreadySetup := hasTrustlessWrapper(string(data))
 	needsChange := rawKeys > 0
 	description := ""
 	if needsChange {
@@ -177,7 +245,9 @@ func DetectClaudeCode() (*AgentDetectResult, error) {
 	}
 
 	content := string(data)
-	alreadyTrustless := strings.Contains(content, "trustless") || strings.Contains(content, "TRUSTLESS_")
+	// 実設定として trustless ラッパーが有効な場合のみ clean: コメント言及や
+	// 空値の TRUSTLESS_* 代入は未設定扱い。
+	alreadyTrustless := hasTrustlessWrapper(content) || hasTrustlessEnvValue(content)
 
 	needsChange := !alreadyTrustless
 	description := ""
@@ -215,7 +285,7 @@ func DetectCodex() (*AgentDetectResult, error) {
 		return nil, fmt.Errorf("failed to read %s: %w", configPath, err)
 	}
 
-	alreadyTrustless := bytes.Contains(data, []byte("trustless"))
+	alreadyTrustless := hasTrustlessWrapper(string(data))
 	hasCredentials := bytes.Contains(data, []byte("api_key")) || bytes.Contains(data, []byte("token")) || bytes.Contains(data, []byte("secret"))
 
 	needsChange := !alreadyTrustless && hasCredentials
@@ -260,18 +330,15 @@ func DetectHermes() (*AgentDetectResult, error) {
 	var rawKeys int
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, "api_key:") || strings.Contains(trimmed, "token:") {
-			parts := strings.SplitN(trimmed, ":", 2)
-			if len(parts) == 2 {
-				val := strings.TrimSpace(parts[1])
-				if val != "" && val != `""` && val != "''" && !strings.Contains(val, "trustless") {
-					rawKeys++
-				}
-			}
+		if trimmed == "" || isCommentLine(trimmed) {
+			continue
+		}
+		if isRawCredentialLine(trimmed) {
+			rawKeys++
 		}
 	}
 
-	alreadySetup := bytes.Contains(data, []byte("trustless"))
+	alreadySetup := hasTrustlessWrapper(string(data))
 	needsChange := rawKeys > 0
 	description := ""
 	if needsChange {

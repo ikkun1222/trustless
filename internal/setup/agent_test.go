@@ -106,6 +106,45 @@ func TestDetectOpenCode_TrustlessWrappedIsClean(t *testing.T) {
 	})
 }
 
+func TestDetectOpenCode_APIKeySpellingVariants(t *testing.T) {
+	// api_key / APIKEY / api-key / apikey の表記揺れも raw として検出すること。
+	variants := []string{
+		"providers:\n  xai:\n    api_key: sk-raw-value-123\n",
+		"providers:\n  xai:\n    APIKEY: sk-raw-value-123\n",
+		"providers:\n  xai:\n    api-key: sk-raw-value-123\n",
+		"providers:\n  xai:\n    apikey: sk-raw-value-123\n",
+	}
+	for _, cfg := range variants {
+		withHome(t, func(home string) {
+			path := filepath.Join(home, ".config", "opencode", "providers.yaml")
+			writeTestFile(t, path, cfg)
+
+			res, err := DetectOpenCode()
+			if err != nil {
+				t.Fatalf("DetectOpenCode: %v", err)
+			}
+			if res == nil || !res.NeedsChange {
+				t.Fatalf("variant config %q must need change, got %+v", cfg, res)
+			}
+		})
+	}
+}
+
+func TestDetectOpenCode_CommentOnlyTrustlessStillNeedsChange(t *testing.T) {
+	withHome(t, func(home string) {
+		cfg := filepath.Join(home, ".config", "opencode", "providers.yaml")
+		writeTestFile(t, cfg, "# managed via trustless (comment only)\nproviders:\n  xai:\n    apiKey: sk-raw-value-123\n")
+
+		res, err := DetectOpenCode()
+		if err != nil {
+			t.Fatalf("DetectOpenCode: %v", err)
+		}
+		if res == nil || !res.NeedsChange {
+			t.Fatalf("comment-only trustless mention must still need change, got %+v", res)
+		}
+	})
+}
+
 func TestDetectOpenCode_ConfigDirOverrideWins(t *testing.T) {
 	withHome(t, func(_ string) {
 		cfgDir := t.TempDir()
@@ -145,6 +184,52 @@ func TestDetectClaudeCode_EnvFileStatus(t *testing.T) {
 		}
 		if res == nil || res.NeedsChange {
 			t.Fatalf("trustless-wrapped env file must be clean, got %+v", res)
+		}
+	})
+}
+
+func TestDetectClaudeCode_CommentOnlyTrustlessStillNeedsChange(t *testing.T) {
+	withHome(t, func(home string) {
+		cfg := filepath.Join(home, ".claude", ".claude.env")
+		writeTestFile(t, cfg, "# credentials wrapped with trustless (comment only)\nexport ANTHROPIC_API_KEY=sk-raw-12345\n")
+
+		res, err := DetectClaudeCode()
+		if err != nil {
+			t.Fatalf("DetectClaudeCode: %v", err)
+		}
+		if res == nil || !res.NeedsChange {
+			t.Fatalf("comment-only trustless mention must still need change, got %+v", res)
+		}
+	})
+}
+
+func TestDetectClaudeCode_EmptyTrustlessEnvIsUnset(t *testing.T) {
+	withHome(t, func(home string) {
+		cfg := filepath.Join(home, ".claude", ".claude.env")
+		// TRUSTLESS_ 変数が空値なら未設定扱い → 要修正。
+		writeTestFile(t, cfg, "export TRUSTLESS_OPENAI=\nexport ANTHROPIC_API_KEY=sk-raw-12345\n")
+
+		res, err := DetectClaudeCode()
+		if err != nil {
+			t.Fatalf("DetectClaudeCode: %v", err)
+		}
+		if res == nil || !res.NeedsChange {
+			t.Fatalf("empty TRUSTLESS_ value must need change, got %+v", res)
+		}
+	})
+}
+
+func TestDetectCodex_CommentOnlyTrustlessStillNeedsChange(t *testing.T) {
+	withHome(t, func(home string) {
+		cfg := filepath.Join(home, ".codex", "config.toml")
+		writeTestFile(t, cfg, "# trustless managed (comment only)\n[model_providers]\napi_key = \"sk-raw-12345\"\n")
+
+		res, err := DetectCodex()
+		if err != nil {
+			t.Fatalf("DetectCodex: %v", err)
+		}
+		if res == nil || !res.NeedsChange {
+			t.Fatalf("comment-only trustless mention must still need change, got %+v", res)
 		}
 	})
 }
@@ -202,6 +287,36 @@ func TestDetectHermes_CountsRawValues(t *testing.T) {
 		}
 		if res == nil || res.NeedsChange {
 			t.Fatalf("trustless-wrapped config must be clean, got %+v", res)
+		}
+	})
+}
+
+func TestDetectHermes_CommentOnlyTrustlessStillNeedsChange(t *testing.T) {
+	withHome(t, func(home string) {
+		cfg := filepath.Join(home, ".hermes", "config.yaml")
+		writeTestFile(t, cfg, "# trustless managed (comment only)\nmodel:\n  api_key: sk-raw-12345\n")
+
+		res, err := DetectHermes()
+		if err != nil {
+			t.Fatalf("DetectHermes: %v", err)
+		}
+		if res == nil || !res.NeedsChange {
+			t.Fatalf("comment-only trustless mention must still need change, got %+v", res)
+		}
+	})
+}
+
+func TestDetectHermes_CommentedOutKeyIsIgnored(t *testing.T) {
+	withHome(t, func(home string) {
+		cfg := filepath.Join(home, ".hermes", "config.yaml")
+		writeTestFile(t, cfg, "model:\n  # api_key: sk-old-commented-out\n  timeout: 30\n")
+
+		res, err := DetectHermes()
+		if err != nil {
+			t.Fatalf("DetectHermes: %v", err)
+		}
+		if res == nil || res.NeedsChange {
+			t.Fatalf("commented-out key must not need change, got %+v", res)
 		}
 	})
 }
