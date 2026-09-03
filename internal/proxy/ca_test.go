@@ -223,6 +223,27 @@ func TestSavePEM_CorrectsExistingKeyMode(t *testing.T) {
 	}
 }
 
+func TestLoadOrGenerateCA_CorruptErrorHasRepairSteps(t *testing.T) {
+	dir := t.TempDir()
+	cfg := CAConfig{CertPath: filepath.Join(dir, "ca.crt"), KeyPath: filepath.Join(dir, "ca.key")}
+	if _, err := GenerateCA(cfg); err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+	if err := os.WriteFile(cfg.CertPath, []byte("not a pem"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 破損 CA は自動再生成せずエラーにし、修復手順を示すこと。
+	_, err := LoadOrGenerateCA(cfg)
+	if err == nil {
+		t.Fatal("LoadOrGenerateCA accepted a corrupt CA, want error (no auto-regeneration)")
+	}
+	for _, want := range []string{"back up", "delete", "regenerate", "re-trust"} {
+		if !strings.Contains(strings.ToLower(err.Error()), want) {
+			t.Errorf("corrupt CA error = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
 func TestDefaultCAPaths_UsesTrustlessConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

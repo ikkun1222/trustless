@@ -41,10 +41,19 @@ func DefaultCAPaths() CAConfig {
 	}
 }
 
+// caRepairHint は破損 CA の修復手順。信頼アンカー保護のため破損時の自動
+// 再生成はしない — 利用者が明示的に退避・削除してから再生成し、新 CA を
+// 再トラストする。
+const caRepairHint = "repair: back up the CA files, delete them, re-run to regenerate the CA, then re-trust the new CA"
+
 func LoadOrGenerateCA(cfg CAConfig) (*CA, error) {
 	if _, err := os.Stat(cfg.CertPath); err == nil {
 		if _, err := os.Stat(cfg.KeyPath); err == nil {
-			return loadCA(cfg)
+			ca, err := loadCA(cfg)
+			if err != nil {
+				return nil, fmt.Errorf("%w (%s)", err, caRepairHint)
+			}
+			return ca, nil
 		}
 	}
 	return GenerateCA(cfg)
