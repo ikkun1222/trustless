@@ -2,6 +2,9 @@ package doctor
 
 import (
 	"errors"
+	"io"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -29,7 +32,72 @@ func TestApplyFixes_SkipsNilFix(t *testing.T) {
 	checks := []CheckResult{
 		{Name: "no-fix", Status: StatusError, Fixable: true, Fix: nil},
 	}
-	applyFixes(checks) // panic しないこと
+	captureStderr(t, func() { applyFixes(checks) }) // panic しないこと
+}
+
+func TestApplyFixes_OnlyErrorWarningAreFixed(t *testing.T) {
+	var ran []string
+	mkFix := func(name string) func() error {
+		return func() error {
+			ran = append(ran, name)
+			return nil
+		}
+	}
+	checks := []CheckResult{
+		{Name: "ok", Status: StatusOK, Fixable: true, Fix: mkFix("ok")},
+		{Name: "info", Status: StatusInfo, Fixable: true, Fix: mkFix("info")},
+		{Name: "err", Status: StatusError, Fixable: true, Fix: mkFix("err")},
+		{Name: "warn-nofix", Status: StatusWarning, Fixable: true, Fix: nil},
+	}
+	stderr := captureStderr(t, func() { applyFixes(checks) })
+	if len(ran) != 1 || ran[0] != "err" {
+		t.Fatalf("applyFixes ran %v, want only [err]", ran)
+	}
+	if !strings.Contains(stderr, "applied 1 fix(es), skipped 1") {
+		t.Fatalf("stderr report = %q, want applied 1 / skipped 1", stderr)
+	}
+}
+
+func TestCheckEnvFiles_WarningIsNotFixable(t *testing.T) {
+	// HOME 配下に資格情報らしき .env を置いても Fixable:true になってはならない。
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(home+"/proj", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(home+"/proj/.env", []byte("API_KEY=dummy-value\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// CheckEnvFiles は home と home/projects を走査する。home 直下の proj/.env
+	// が home 走査で見つかるはず。
+	r := CheckEnvFiles()
+	if r.Status != StatusWarning {
+		t.Fatalf("CheckEnvFiles status = %v (%s), want StatusWarning", r.Status, r.Message)
+	}
+	if r.Fixable || r.Fix != nil {
+		t.Fatal("CheckEnvFiles .env warning must not claim Fixable (no-op fix)")
+	}
+	if !strings.Contains(r.Message, "trustless setup") {
+		t.Fatalf("warning message = %q, want migration hint", r.Message)
+	}
+}
+
+// captureStderr runs fn while os.Stderr is redirected to a pipe and returns
+// everything written to it.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = old }()
+	fn()
+	w.Close()
+	out, _ := io.ReadAll(r)
+	r.Close()
+	return string(out)
 }
 
 func TestCheckBitwardenCLI(t *testing.T) {

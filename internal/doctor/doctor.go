@@ -145,18 +145,26 @@ func exitCode(all []CheckResult) int {
 	return 0
 }
 
-// applyFixes runs the fix attached to each check that has one. Checks marked
-// Fixable without a Fix (agent integrations) are skipped so --fix never
-// claims to change something it cannot.
+// applyFixes runs the fix attached to each Error/Warning check. OK/Info
+// results are never touched. Checks without a Fix (e.g. agent integrations,
+// .env scan) are skipped and counted so --fix never claims to change
+// something it cannot. Totals go to stderr.
 func applyFixes(all []CheckResult) {
+	var applied, skipped int
 	for _, c := range all {
+		if c.Status != StatusError && c.Status != StatusWarning {
+			continue
+		}
 		if c.Fix == nil {
+			skipped++
 			continue
 		}
 		if err := c.Fix(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error fixing %s: %v\n", c.Name, err)
 		}
+		applied++
 	}
+	fmt.Fprintf(os.Stderr, "doctor --fix: applied %d fix(es), skipped %d without automatic fix\n", applied, skipped)
 }
 
 func printReport(groups []reportGroup, all []CheckResult, fix bool) {
