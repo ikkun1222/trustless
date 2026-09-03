@@ -46,6 +46,10 @@ func TestGenerateCA_CreatesCertAndKeyFiles(t *testing.T) {
 	if keyBlock == nil {
 		t.Fatal("key file contains no PEM block")
 	}
+	// PKCS#8 DER に対する正しいブロックタイプ。
+	if keyBlock.Type != "PRIVATE KEY" {
+		t.Fatalf("key PEM type = %q, want PRIVATE KEY", keyBlock.Type)
+	}
 
 	fi, err := os.Stat(cfg.KeyPath)
 	if err != nil {

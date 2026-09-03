@@ -142,7 +142,7 @@ func GenerateCA(cfg CAConfig) (*CA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal CA key: %w", err)
 	}
-	if err := savePEM(cfg.KeyPath, 0600, "EC PRIVATE KEY", keyDER); err != nil {
+	if err := savePEM(cfg.KeyPath, 0600, "PRIVATE KEY", keyDER); err != nil {
 		return nil, fmt.Errorf("save CA key: %w", err)
 	}
 
