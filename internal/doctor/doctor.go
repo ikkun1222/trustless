@@ -117,6 +117,11 @@ func Run(args []string) int {
 		all = append(all, g.Checks...)
 	}
 
+	// --fix は出力形式より先に適用する: --json --fix でも修正が有効になる。
+	if *fix {
+		applyFixes(all)
+	}
+
 	if *jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -124,9 +129,6 @@ func Run(args []string) int {
 		return exitCode(all)
 	}
 
-	if *fix {
-		applyFixes(all)
-	}
 	printReport(groups, all, *fix)
 	return exitCode(all)
 }

@@ -1,8 +1,36 @@
 package doctor
 
 import (
+	"errors"
 	"testing"
 )
+
+func TestApplyFixes_RunsFixesAndToleratesErrors(t *testing.T) {
+	var ran []string
+	checks := []CheckResult{
+		{Name: "ok-no-fix", Status: StatusOK},
+		{Name: "fixed", Status: StatusError, Fixable: true, Fix: func() error {
+			ran = append(ran, "fixed")
+			return nil
+		}},
+		{Name: "broken-fix", Status: StatusWarning, Fixable: true, Fix: func() error {
+			ran = append(ran, "broken-fix")
+			return errors.New("fake fix failure")
+		}},
+	}
+	// Fix の失敗は全体を落とさず stderr 報告のみ（panic/exit しないこと）。
+	applyFixes(checks)
+	if len(ran) != 2 || ran[0] != "fixed" || ran[1] != "broken-fix" {
+		t.Fatalf("applyFixes ran %v, want [fixed broken-fix] in order", ran)
+	}
+}
+
+func TestApplyFixes_SkipsNilFix(t *testing.T) {
+	checks := []CheckResult{
+		{Name: "no-fix", Status: StatusError, Fixable: true, Fix: nil},
+	}
+	applyFixes(checks) // panic しないこと
+}
 
 func TestCheckBitwardenCLI(t *testing.T) {
 	r := CheckBitwardenCLI()
