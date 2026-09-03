@@ -128,8 +128,12 @@ func dispatch(cmd string, args []string, be backend.Backend, cfg *config.Config,
 
 // newBackend selects the credential backend from the config. Kept separate from
 // main to keep its cyclomatic complexity under the CCN 15 gate.
+// An empty Backend aliases "pass" (config.Default uses "pass"; a missing key
+// decodes as "").
 func newBackend(cfg *config.Config) backend.Backend {
 	switch cfg.Backend {
+	case "pass", "":
+		return backend.NewPassBackend()
 	case "env":
 		return backend.NewEnvBackend()
 	case "bitwarden":
@@ -140,7 +144,7 @@ func newBackend(cfg *config.Config) backend.Backend {
 		}
 		return bwb
 	default:
-		fmt.Fprintf(os.Stderr, "Error: unsupported backend %q (supported: pass, env, bitwarden)\n", cfg.Backend)
+		fmt.Fprintf(os.Stderr, "Error: unsupported backend %q (supported: %s)\n", cfg.Backend, strings.Join(validBackends, ", "))
 		os.Exit(4)
 	}
 	return nil
@@ -457,7 +461,9 @@ func printCompletionUsage() {
 	fmt.Fprintln(os.Stderr, "  trustless completion fish > ~/.config/fish/completions/trustless.fish")
 }
 
-// validBackends are the credential backend names newBackend can construct.
+// validBackends is the single source of truth for supported backend names.
+// newBackend must have a case for every entry here ("" is the pass alias for
+// a missing config key); validateConfigValue accepts exactly these names.
 var validBackends = []string{"pass", "env", "bitwarden"}
 
 // validateConfigValue rejects values that would break behavior at run time if
@@ -470,7 +476,7 @@ func validateConfigValue(key, value string) error {
 				return nil
 			}
 		}
-		return fmt.Errorf("invalid backend %q (supported: pass, env, bitwarden)", value)
+		return fmt.Errorf("invalid backend %q (supported: %s)", value, strings.Join(validBackends, ", "))
 	case "run_defaults.sanitize":
 		if value == "true" || value == "false" {
 			return nil

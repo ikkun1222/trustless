@@ -1,6 +1,39 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/ikkun1222/trustless/internal/backend"
+	"github.com/ikkun1222/trustless/internal/config"
+)
+
+func TestNewBackend(t *testing.T) {
+	if be := newBackend(&config.Config{Backend: ""}); be == nil {
+		t.Fatal(`newBackend("") returned nil`)
+	} else if _, ok := be.(*backend.PassBackend); !ok {
+		t.Fatalf(`newBackend("") = %T, want *backend.PassBackend`, be)
+	}
+	if be := newBackend(&config.Config{Backend: "pass"}); be == nil {
+		t.Fatal(`newBackend("pass") returned nil`)
+	} else if _, ok := be.(*backend.PassBackend); !ok {
+		t.Fatalf(`newBackend("pass") = %T, want *backend.PassBackend`, be)
+	}
+	if be := newBackend(&config.Config{Backend: "env"}); be == nil {
+		t.Fatal(`newBackend("env") returned nil`)
+	} else if _, ok := be.(*backend.EnvBackend); !ok {
+		t.Fatalf(`newBackend("env") = %T, want *backend.EnvBackend`, be)
+	}
+	// Every validBackends entry except bitwarden (which calls Load and may
+	// exit) must construct without exiting; "" aliases pass.
+	for _, name := range validBackends {
+		if name == "bitwarden" {
+			continue
+		}
+		if be := newBackend(&config.Config{Backend: name}); be == nil {
+			t.Fatalf("newBackend(%q) returned nil", name)
+		}
+	}
+}
 
 func TestValidateConfigValue(t *testing.T) {
 	valid := []struct{ key, value string }{
