@@ -58,6 +58,8 @@ func TestLoadSecretsFromBackend_ExcludesEmails(t *testing.T) {
 		"sk-secret-a-1234567890",
 		"admin@example.com",
 		"sk-secret-b-1234567890",
+		// Strict IsEmail: a space disqualifies it, so this stays a
+		// credential (fail-closed toward masking).
 		"user name@corp.example",
 	}}
 
@@ -65,7 +67,7 @@ func TestLoadSecretsFromBackend_ExcludesEmails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSecretsFromBackend: %v", err)
 	}
-	want := []string{"sk-secret-a-1234567890", "sk-secret-b-1234567890"}
+	want := []string{"sk-secret-a-1234567890", "sk-secret-b-1234567890", "user name@corp.example"}
 	if len(secrets) != len(want) {
 		t.Fatalf("secrets = %v, want %v (emails excluded)", secrets, want)
 	}

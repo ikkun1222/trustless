@@ -127,6 +127,42 @@ func TestScanAndRedact_EmailAddressNotMasked(t *testing.T) {
 	}
 }
 
+func TestIsEmail_Boundaries(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"admin@example.com", true},
+		{"someone@example.co.jp", true},
+		{"a@b.c", false},                  // TLD 1 文字は email でない → credential として残る
+		{"user name@corp.example", false}, // 空白入りは email でない
+		{"admin@exa mple.com", false},     // ドメイン内空白は email でない
+		{"a@@b.com", false},               // @ 複数は拒否
+		{"@example.com", false},           // 先頭 @（ローカル部空）は拒否
+		{"admin@", false},                 // ドメイン部空は拒否
+		{"admin@example", false},          // ドットなしドメインは拒否
+		{"not-an-email", false},           // @ なしは拒否
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := IsEmail(tc.in); got != tc.want {
+			t.Errorf("IsEmail(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestScanAndRedact_ShortIdentifierIsMasked(t *testing.T) {
+	// a@b.c は email 扱いされないため、credential としてマスキングされる。
+	secret := "a@b.c"
+	out, changed := ScanAndRedact("token "+secret+" end", []string{secret}, 1)
+	if !changed {
+		t.Fatalf("expected changed=true for non-email identifier, got %q", out)
+	}
+	if strings.Contains(out, secret) {
+		t.Fatalf("credential leaked: %q", out)
+	}
+}
+
 func TestScanAndRedact_MixedEmailAndSecret(t *testing.T) {
 	// A real secret alongside an email: only the secret is masked.
 	secret := "sk-real-secret-abcdef123456"
