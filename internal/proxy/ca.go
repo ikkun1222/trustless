@@ -34,12 +34,17 @@ type CAConfig struct {
 	KeyPath  string
 }
 
-func DefaultCAPaths() CAConfig {
-	home, _ := os.UserHomeDir()
+// DefaultCAPaths resolves the standard CA file locations. A UserHomeDir
+// failure is returned as an error (never silently resolved against "").
+func DefaultCAPaths() (CAConfig, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return CAConfig{}, fmt.Errorf("resolve home for CA paths: %w", err)
+	}
 	return CAConfig{
 		CertPath: filepath.Join(home, ".config", "trustless", caCertName),
 		KeyPath:  filepath.Join(home, ".config", "trustless", caKeyName),
-	}
+	}, nil
 }
 
 // caRepairHint は破損 CA の修復手順。信頼アンカー保護のため破損時の自動

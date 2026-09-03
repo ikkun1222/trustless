@@ -256,7 +256,11 @@ func TestDefaultCAPaths_UsesTrustlessConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	paths := DefaultCAPaths()
+	// UserHomeDir エラーは無視せず error として返す契約。
+	paths, err := DefaultCAPaths()
+	if err != nil {
+		t.Fatalf("DefaultCAPaths: %v", err)
+	}
 	if !strings.HasSuffix(paths.CertPath, caCertName) {
 		t.Fatalf("cert path %q does not end with %q", paths.CertPath, caCertName)
 	}
