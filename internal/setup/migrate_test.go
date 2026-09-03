@@ -225,12 +225,49 @@ func TestImportToPass_RequiresPassBinary(t *testing.T) {
 	err := ImportToPass([]EnvFile{{
 		Path:    "/nonexistent/.env",
 		Entries: []EnvEntry{{Key: "some_key", Value: "some value"}},
-	}}, "")
+	}})
 	if err == nil {
 		t.Fatal("expected error when pass binary is missing")
 	}
 	if !strings.Contains(err.Error(), "pass insert failed") {
 		t.Fatalf("error = %q, want it to mention pass insert failure", err)
+	}
+}
+
+func TestImportToPass_RejectsUnsafeKeys(t *testing.T) {
+	// 検証は `pass` 実行より先に行われるため、バイナリの有無に依存しない。
+	bad := []string{
+		"",
+		"../evil",
+		"a/../../b",
+		"key with space",
+		"key;rm -rf",
+		"key$var",
+		`"quoted"`,
+		"key=value",
+		"..",
+	}
+	for _, key := range bad {
+		err := ImportToPass([]EnvFile{{
+			Path:    "/fake/.env",
+			Entries: []EnvEntry{{Key: key, Value: "v"}},
+		}})
+		if err == nil {
+			t.Errorf("ImportToPass accepted unsafe key %q, want error", key)
+			continue
+		}
+		if !strings.Contains(err.Error(), "unsafe") {
+			t.Errorf("ImportToPass(%q) error = %q, want it to mention unsafe key", key, err)
+		}
+	}
+}
+
+func TestValidPassKey(t *testing.T) {
+	good := []string{"API_KEY", "iria/api/xai", "my-key", "a.b_c/d-e", "X1"}
+	for _, key := range good {
+		if !validPassKey(key) {
+			t.Errorf("validPassKey(%q) = false, want true", key)
+		}
 	}
 }
 

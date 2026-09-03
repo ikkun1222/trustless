@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -86,9 +87,24 @@ func ScanEnvFiles(searchPaths []string) ([]EnvFile, error) {
 	return envFiles, nil
 }
 
-func ImportToPass(envFiles []EnvFile, backupDir string) error {
+// passKeyPattern は `pass insert` に渡して安全なキー文字の許可リスト。
+var passKeyPattern = regexp.MustCompile(`^[A-Za-z0-9/_.-]+$`)
+
+// validPassKey reports whether key is safe to hand to `pass insert`:
+// allow-listed characters only, and no ".." segments (path escape).
+func validPassKey(key string) bool {
+	if key == "" || !passKeyPattern.MatchString(key) {
+		return false
+	}
+	return !strings.Contains(key, "..")
+}
+
+func ImportToPass(envFiles []EnvFile) error {
 	for _, ef := range envFiles {
 		for _, entry := range ef.Entries {
+			if !validPassKey(entry.Key) {
+				return fmt.Errorf("refusing to import unsafe pass key %q from %s", entry.Key, ef.Path)
+			}
 			cmd := exec.Command("pass", "insert", "-f", entry.Key)
 			stdin, err := cmd.StdinPipe()
 			if err != nil {
