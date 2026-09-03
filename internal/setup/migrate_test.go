@@ -125,6 +125,58 @@ func TestBackupEnvFiles_PreservesRelativeLayout(t *testing.T) {
 	}
 }
 
+func TestBackupEnvFiles_RejectsPathOutsideCwd(t *testing.T) {
+	// cwd 外の絶対パスは backupDir 外へ解決されるため拒否されなければならない
+	// （パストラバーサル防止）。
+	root := t.TempDir()
+	t.Chdir(root)
+	outside := t.TempDir()
+	outsideEnv := filepath.Join(outside, ".env")
+	writeTestFile(t, outsideEnv, "K=V\n")
+
+	err := BackupEnvFiles([]EnvFile{{Path: outsideEnv}}, filepath.Join(root, "backup"))
+	if err == nil {
+		t.Fatal("BackupEnvFiles accepted a path outside cwd, want traversal error")
+	}
+}
+
+func TestBackupEnvFiles_Mode0600(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	backupDir := filepath.Join(root, "backup")
+
+	src := filepath.Join(root, "a", ".env")
+	writeTestFile(t, src, "K=V\n")
+
+	if err := BackupEnvFiles([]EnvFile{{Path: src}}, backupDir); err != nil {
+		t.Fatalf("BackupEnvFiles: %v", err)
+	}
+	rel, _ := filepath.Rel(root, src)
+	dst := filepath.Join(backupDir, rel)
+	if perm := fileMode(t, dst); perm != 0o600 {
+		t.Fatalf("backup mode = %04o, want 0600", perm)
+	}
+
+	// 既存 0644 ファイルへの再バックアップでも 0600 に矯正されること。
+	if err := os.Chmod(dst, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := BackupEnvFiles([]EnvFile{{Path: src}}, backupDir); err != nil {
+		t.Fatalf("BackupEnvFiles: %v", err)
+	}
+	if perm := fileMode(t, dst); perm != 0o600 {
+		t.Fatalf("re-backup mode = %04o, want 0600", perm)
+	}
+}
+
+func fileMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Mode().Perm()
+}
 func TestScanEnvFiles_RecursesIntoNestedDirs(t *testing.T) {
 	// The walk is recursive over the given search root: any .env below it is
 	// scanned, including files that look like backup copies. Keeping backups

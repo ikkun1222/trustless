@@ -109,6 +109,10 @@ func ImportToPass(envFiles []EnvFile, backupDir string) error {
 }
 
 func BackupEnvFiles(envFiles []EnvFile, backupDir string) error {
+	absBackup, err := filepath.Abs(backupDir)
+	if err != nil {
+		return fmt.Errorf("failed to resolve backup dir: %w", err)
+	}
 	for _, ef := range envFiles {
 		absPath, err := filepath.Abs(ef.Path)
 		if err != nil {
@@ -122,7 +126,13 @@ func BackupEnvFiles(envFiles []EnvFile, backupDir string) error {
 		if err != nil {
 			return fmt.Errorf("failed to get relative path: %w", err)
 		}
-		dst := filepath.Join(backupDir, relPath)
+		dst := filepath.Join(absBackup, relPath)
+		// relPath が ".." を含むと backupDir 外へ解決されるため拒否
+		// （パストラバーサル防止）。
+		if rel, err := filepath.Rel(absBackup, dst); err != nil ||
+			rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("refusing to back up outside backup dir: %s", ef.Path)
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", filepath.Dir(dst), err)
 		}
@@ -140,16 +150,20 @@ func copyFile(src, dst string) error {
 	}
 	defer r.Close()
 
-	w, err := os.Create(dst)
+	// 0600 で作成（平文バックアップの保護）。OpenFile は既存ファイルの
+	// モードを変えないため後段で Chmod し直す。
+	w, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
-	defer w.Close()
-
 	if _, err := io.Copy(w, r); err != nil {
+		w.Close()
 		return err
 	}
-	return w.Close()
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(dst, 0600)
 }
 
 func RemoveEnvFiles(envFiles []EnvFile) error {
