@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ikkun1222/trustless/internal/audit"
 	"github.com/ikkun1222/trustless/internal/backend"
@@ -44,6 +45,14 @@ func main() {
 	// Initialize backend
 	cmd := os.Args[1]
 	args := os.Args[2:]
+
+	// --help / -h / help anywhere at the top level shows usage. Without
+	// this, `trustless --help` lands in the unknown-command branch.
+	switch cmd {
+	case "--help", "-h", "help":
+		printUsageTo(os.Stdout)
+		os.Exit(0)
+	}
 
 	// bw-unlock must run even when the session is invalid (that is its purpose),
 	// so it bypasses backend initialization entirely.
@@ -105,7 +114,7 @@ func dispatch(cmd string, args []string, be backend.Backend, cfg *config.Config,
 	case "completion":
 		runCompletion(args)
 	case "doctor":
-		doctor.Run(args)
+		os.Exit(doctor.Run(args))
 	case "setup":
 		setup.Run(args)
 	case "bw-unlock":
@@ -131,25 +140,33 @@ func newBackend(cfg *config.Config) backend.Backend {
 		}
 		return bwb
 	default:
-		return backend.NewPassBackend()
+		fmt.Fprintf(os.Stderr, "Error: unsupported backend %q (supported: pass, env, bitwarden)\n", cfg.Backend)
+		os.Exit(4)
 	}
+	return nil
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "trustless — credential broker for AI agents")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  trustless secret     Manage credentials (list, get, set)")
-	fmt.Fprintln(os.Stderr, "  trustless run        Run command with injected credentials")
-	fmt.Fprintln(os.Stderr, "  trustless proxy      Start credential injection proxy")
-	fmt.Fprintln(os.Stderr, "  trustless oauth      Manage OAuth credentials (login, refresh, status, providers)")
-	fmt.Fprintln(os.Stderr, "  trustless serve      Run injection + DLP proxies in one process")
-	fmt.Fprintln(os.Stderr, "  trustless config     Manage configuration")
-	fmt.Fprintln(os.Stderr, "  trustless version    Show version information")
-	fmt.Fprintln(os.Stderr, "  trustless completion   Generate shell completion script")
-	fmt.Fprintln(os.Stderr, "  trustless doctor       System health check (--fix, --json)")
-	fmt.Fprintln(os.Stderr, "  trustless setup        First-time setup wizard (GPG, pass, .env migration)")
-	fmt.Fprintln(os.Stderr, "  trustless bw-unlock    Unlock the Bitwarden vault (session key via stdin)")
+	printUsageTo(os.Stderr)
+}
+
+// printUsageTo renders the top-level usage to an explicit stream: stderr for
+// error paths, stdout when the user explicitly asked for help.
+func printUsageTo(w io.Writer) {
+	fmt.Fprintln(w, "trustless — credential broker for AI agents")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  trustless secret     Manage credentials (list, get, set)")
+	fmt.Fprintln(w, "  trustless run        Run command with injected credentials")
+	fmt.Fprintln(w, "  trustless proxy      Start credential injection proxy")
+	fmt.Fprintln(w, "  trustless oauth      Manage OAuth credentials (login, refresh, status, providers)")
+	fmt.Fprintln(w, "  trustless serve      Run injection + DLP proxies in one process")
+	fmt.Fprintln(w, "  trustless config     Manage configuration")
+	fmt.Fprintln(w, "  trustless version    Show version information")
+	fmt.Fprintln(w, "  trustless completion   Generate shell completion script")
+	fmt.Fprintln(w, "  trustless doctor       System health check (--fix, --json)")
+	fmt.Fprintln(w, "  trustless setup        First-time setup wizard (GPG, pass, .env migration)")
+	fmt.Fprintln(w, "  trustless bw-unlock    Unlock the Bitwarden vault (session key via stdin)")
 }
 
 // runBWUnlock implements `trustless bw-unlock`: it prompts for the master
@@ -269,6 +286,14 @@ func runConfig(args []string, cfg *config.Config, cfgPath string) {
 		key := args[1]
 		value := strings.Join(args[2:], " ")
 
+		// Validate before writing so a typo cannot silently corrupt the
+		// config: an unknown backend name would otherwise fall back to pass,
+		// and a bad timeout would only fail later at run time.
+		if err := validateConfigValue(key, value); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 		currentCfg, err := config.Load(cfgPath)
 		if err != nil {
 			currentCfg = config.Default()
@@ -284,12 +309,7 @@ func runConfig(args []string, cfg *config.Config, cfgPath string) {
 		case "run_defaults.timeout":
 			currentCfg.RunDefaults.Timeout = value
 		case "proxy.port":
-			port, err := strconv.Atoi(value)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: invalid port: %s\n", value)
-				os.Exit(1)
-			}
-			currentCfg.Proxy.Port = port
+			currentCfg.Proxy.Port, _ = strconv.Atoi(value)
 		case "policy.default.denied_commands":
 			currentCfg.Policy.Default.DeniedCommands = strings.Split(value, ",")
 			for i, cmd := range currentCfg.Policy.Default.DeniedCommands {
@@ -435,6 +455,38 @@ func printCompletionUsage() {
 	fmt.Fprintln(os.Stderr, "  trustless completion bash > /etc/bash_completion.d/trustless")
 	fmt.Fprintln(os.Stderr, "  trustless completion zsh > /usr/local/share/zsh/site-functions/_trustless")
 	fmt.Fprintln(os.Stderr, "  trustless completion fish > ~/.config/fish/completions/trustless.fish")
+}
+
+// validBackends are the credential backend names newBackend can construct.
+var validBackends = []string{"pass", "env", "bitwarden"}
+
+// validateConfigValue rejects values that would break behavior at run time if
+// written. Unknown config keys are rejected by runConfig itself.
+func validateConfigValue(key, value string) error {
+	switch key {
+	case "backend":
+		for _, b := range validBackends {
+			if value == b {
+				return nil
+			}
+		}
+		return fmt.Errorf("invalid backend %q (supported: pass, env, bitwarden)", value)
+	case "run_defaults.sanitize":
+		if value == "true" || value == "false" {
+			return nil
+		}
+		return fmt.Errorf("invalid boolean %q (expected \"true\" or \"false\")", value)
+	case "run_defaults.timeout":
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("invalid duration %q: %v", value, err)
+		}
+	case "proxy.port":
+		port, err := strconv.Atoi(value)
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("invalid port %q (expected 1-65535)", value)
+		}
+	}
+	return nil
 }
 
 func printConfigUsage() {

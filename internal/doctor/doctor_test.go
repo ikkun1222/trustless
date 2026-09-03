@@ -27,6 +27,28 @@ func TestCheckBitwardenSessionNoFile(t *testing.T) {
 	}
 }
 
+func TestExitCode(t *testing.T) {
+	// StatusError が1つでもあれば gate は失敗(1)。警告・情報のみなら成功(0)。
+	tests := []struct {
+		name   string
+		checks []CheckResult
+		want   int
+	}{
+		{"all ok", []CheckResult{{Name: "a", Status: StatusOK}}, 0},
+		{"warnings only", []CheckResult{{Name: "a", Status: StatusWarning}}, 0},
+		{"info only", []CheckResult{{Name: "a", Status: StatusInfo}}, 0},
+		{"one error", []CheckResult{{Name: "a", Status: StatusOK}, {Name: "b", Status: StatusError}}, 1},
+		{"mixed", []CheckResult{{Name: "a", Status: StatusError}, {Name: "b", Status: StatusWarning}}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitCode(tt.checks); got != tt.want {
+				t.Fatalf("exitCode(%v) = %d, want %d", tt.checks, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAgentDetectFns(t *testing.T) {
 	// trustless 経由設定の代表パターン:
 	// 1) "trustless" 文字列参照  2) DLP プロキシ(8787)参照  3) 注入プロキシ(8080)参照

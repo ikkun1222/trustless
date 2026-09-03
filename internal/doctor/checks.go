@@ -293,13 +293,14 @@ func CheckEnvFiles() CheckResult {
 	}
 
 	if len(found) > 0 {
+		files := found
 		return CheckResult{
 			Name:    ".env scan",
 			Status:  StatusWarning,
 			Message: fmt.Sprintf("%d .env file(s) with plaintext credentials", len(found)),
 			Fixable: true,
 			Fix: func() error {
-				fmt.Fprintf(os.Stderr, "  Run: trustless setup --import-dir ~/projects\n")
+				printEnvFileFixHint(files)
 				return nil
 			},
 		}
@@ -310,6 +311,14 @@ func CheckEnvFiles() CheckResult {
 		Status:  StatusOK,
 		Message: "No .env files with plaintext credentials found",
 	}
+}
+
+// printEnvFileFixHint lists the plaintext .env files and points at setup.
+func printEnvFileFixHint(files []string) {
+	for _, f := range files {
+		fmt.Fprintf(os.Stderr, "  .env with credentials: %s\n", f)
+	}
+	fmt.Fprintln(os.Stderr, "  Run: trustless setup --import-dir <directory> to import them into pass")
 }
 
 func CheckAgentIntegration(name string, configPaths []string, fn AgentCheckFn) CheckResult {
