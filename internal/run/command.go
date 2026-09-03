@@ -108,10 +108,20 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 	ctx, cancel := buildContext(*timeoutStr)
 	defer cancel()
 
-	env, credValues := resolveSecrets(ctx, secrets, be)
+	// ライブラリ層は error を返すのみで、os.Exit はコマンド入口の Run だけが
+	// 行う（テスト可能な薄い層に分離）。
+	env, credValues, err := resolveSecrets(ctx, secrets, be)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
+	}
 
 	sanitize := *sanitizeFlag && cfg.RunDefaults.Sanitize
-	s := buildScanner(sanitize, cfg, *sanitizePolicy)
+	s, err := buildScanner(sanitize, cfg, *sanitizePolicy)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
+	}
 
 	if *scanArgs && s != nil {
 		if s.ContainsCredentials([]byte(strings.Join(cmdArgs, " ")), credValues) {
@@ -139,7 +149,10 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 	})
 
 	if *jsonOutput {
-		runJSON(cmd, sanitize, s, credValues)
+		if err := runJSON(cmd, sanitize, s, credValues); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	} else {
 		runPassthrough(cmd, sanitize, s, credValues)
 	}
@@ -212,12 +225,11 @@ func buildContext(timeoutStr string) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, d)
 }
 
-func resolveSecrets(ctx context.Context, secrets stringSlice, be backend.Backend) ([]string, []string) {
+func resolveSecrets(ctx context.Context, secrets stringSlice, be backend.Backend) ([]string, []string, error) {
 	env := os.Environ()
 	names, err := resolveEnvNames(secrets, env)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(2)
+		return nil, nil, err
 	}
 	var credValues []string
 	for i, spec := range secrets {
@@ -227,31 +239,28 @@ func resolveSecrets(ctx context.Context, secrets stringSlice, be backend.Backend
 		}
 		val, err := be.Resolve(ctx, secretKey)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(2)
+			return nil, nil, err
 		}
 		env = append(env, names[i]+"="+val)
 		credValues = append(credValues, val)
 	}
-	return env, credValues
+	return env, credValues, nil
 }
 
-func buildScanner(sanitize bool, cfg *config.Config, sanitizePolicy string) *scanner.Scanner {
+func buildScanner(sanitize bool, cfg *config.Config, sanitizePolicy string) (*scanner.Scanner, error) {
 	if !sanitize {
-		return nil
+		return nil, nil
 	}
 	s := scanner.New()
 	for _, p := range cfg.Sanitize.Patterns {
 		if err := s.AddPattern(p); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: invalid pattern in config: %v\n", err)
-			os.Exit(2)
+			return nil, fmt.Errorf("invalid pattern in config: %w", err)
 		}
 	}
 	if sanitizePolicy != "" {
 		data, err := os.ReadFile(sanitizePolicy)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: reading sanitize policy: %v\n", err)
-			os.Exit(2)
+			return nil, fmt.Errorf("reading sanitize policy: %w", err)
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
@@ -259,12 +268,11 @@ func buildScanner(sanitize bool, cfg *config.Config, sanitizePolicy string) *sca
 				continue
 			}
 			if err := s.AddPattern(line); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: invalid pattern in policy file: %v\n", err)
-				os.Exit(2)
+				return nil, fmt.Errorf("invalid pattern in policy file: %w", err)
 			}
 		}
 	}
-	return s
+	return s, nil
 }
 
 // sanitizingWriter streams child output through the credential scanner line by
@@ -336,21 +344,18 @@ func runPassthrough(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValue
 	}
 }
 
-func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []string) {
+func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []string) error {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("start command: %w", err)
 	}
 
 	stdout, _ := io.ReadAll(stdoutPipe)
@@ -367,8 +372,7 @@ func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []str
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		} else {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("wait command: %w", err)
 		}
 	}
 
@@ -381,7 +385,7 @@ func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []str
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(res); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("encode result: %w", err)
 	}
+	return nil
 }

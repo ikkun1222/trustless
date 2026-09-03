@@ -261,7 +261,10 @@ func TestResolveSecrets_AppendsEnvAndTracksValues(t *testing.T) {
 
 	for _, tc := range cases {
 		base := len(os.Environ())
-		env, cred := resolveSecrets(context.Background(), stringSlice{tc.spec}, be)
+		env, cred, err := resolveSecrets(context.Background(), stringSlice{tc.spec}, be)
+		if err != nil {
+			t.Fatalf("resolveSecrets(%q) = %v, want nil", tc.spec, err)
+		}
 		if len(env) != base+1 {
 			t.Fatalf("env grew to %d, want %d (base %d)", len(env), base+1, base)
 		}
@@ -274,6 +277,20 @@ func TestResolveSecrets_AppendsEnvAndTracksValues(t *testing.T) {
 	}
 }
 
+func TestResolveSecrets_MissingKeyReturnsError(t *testing.T) {
+	be := &mockBackend{values: map[string]string{}}
+	if _, _, err := resolveSecrets(context.Background(), stringSlice{"no-such-key"}, be); err == nil {
+		t.Fatal("resolveSecrets with missing key = nil, want error (no os.Exit)")
+	}
+}
+
+func TestResolveSecrets_CollisionReturnsError(t *testing.T) {
+	be := &mockBackend{values: map[string]string{"a/b-foo": "v1", "c/b_foo": "v2"}}
+	if _, _, err := resolveSecrets(context.Background(), stringSlice{"a/b-foo", "c/b_foo"}, be); err == nil {
+		t.Fatal("resolveSecrets with colliding names = nil, want error")
+	}
+}
+
 func TestBuildScanner_LoadsPolicyFilePatterns(t *testing.T) {
 	dir := t.TempDir()
 	policyPath := dir + "/policy.txt"
@@ -281,7 +298,10 @@ func TestBuildScanner_LoadsPolicyFilePatterns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := buildScanner(true, config.Default(), policyPath)
+	s, err := buildScanner(true, config.Default(), policyPath)
+	if err != nil {
+		t.Fatalf("buildScanner = %v, want nil", err)
+	}
 	if s == nil {
 		t.Fatal("buildScanner returned nil")
 	}
@@ -295,8 +315,31 @@ func TestBuildScanner_LoadsPolicyFilePatterns(t *testing.T) {
 }
 
 func TestBuildScanner_DisabledReturnsNil(t *testing.T) {
-	if s := buildScanner(false, config.Default(), ""); s != nil {
+	s, err := buildScanner(false, config.Default(), "")
+	if err != nil {
+		t.Fatalf("buildScanner = %v, want nil", err)
+	}
+	if s != nil {
 		t.Fatal("buildScanner with sanitize=false must return nil")
+	}
+}
+
+func TestBuildScanner_ErrorPaths(t *testing.T) {
+	badCfg := config.Default()
+	badCfg.Sanitize.Patterns = []string{"(["}
+	if _, err := buildScanner(true, badCfg, ""); err == nil {
+		t.Error("buildScanner with invalid config pattern = nil, want error")
+	}
+	if _, err := buildScanner(true, config.Default(), "/nonexistent/policy.txt"); err == nil {
+		t.Error("buildScanner with missing policy file = nil, want error")
+	}
+	dir := t.TempDir()
+	badPath := dir + "/bad-policy.txt"
+	if err := os.WriteFile(badPath, []byte("([invalid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildScanner(true, config.Default(), badPath); err == nil {
+		t.Error("buildScanner with invalid policy pattern = nil, want error")
 	}
 }
 
@@ -306,7 +349,11 @@ func TestRunJSON_ReportsExitCodeAndSanitizesOutput(t *testing.T) {
 	cmd := exec.Command("sh", "-c",
 		`echo "leak sk-abcdefghijklmnopqrstuvwxyz"; echo "exact sekrit-plain-value-123456" >&2; exit 3`)
 
-	out := captureStdout(t, func() { runJSON(cmd, true, s, values) })
+	out := captureStdout(t, func() {
+		if err := runJSON(cmd, true, s, values); err != nil {
+			t.Errorf("runJSON = %v, want nil", err)
+		}
+	})
 
 	var res runResult
 	if err := json.Unmarshal([]byte(out), &res); err != nil {
@@ -326,6 +373,13 @@ func TestRunJSON_ReportsExitCodeAndSanitizesOutput(t *testing.T) {
 	}
 	if !strings.Contains(res.Stderr, "[REDACTED]") {
 		t.Fatalf("stderr not sanitized: %q", res.Stderr)
+	}
+}
+
+func TestRunJSON_StartFailureReturnsError(t *testing.T) {
+	cmd := exec.Command("trustless-nonexistent-binary-xyz")
+	if err := runJSON(cmd, false, nil, nil); err == nil {
+		t.Fatal("runJSON with missing binary = nil, want error (no os.Exit)")
 	}
 }
 
