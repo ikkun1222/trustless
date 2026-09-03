@@ -2,6 +2,8 @@ package dlp
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/ikkun1222/trustless/internal/audit"
+	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/dlp/redact"
 	"sync"
 	"sync/atomic"
@@ -21,6 +24,77 @@ import (
 	"github.com/ikkun1222/trustless/internal/dlp/config"
 	"github.com/ikkun1222/trustless/internal/dlp/proxy"
 )
+
+// fakeSecretsBackend is a minimal in-memory backend whose Values results are
+// scripted by the test.
+type fakeSecretsBackend struct {
+	vals []string
+	err  error
+}
+
+func (f *fakeSecretsBackend) Resolve(context.Context, string) (string, error) { return "", nil }
+func (f *fakeSecretsBackend) List(context.Context) ([]backend.Entry, error)   { return nil, nil }
+func (f *fakeSecretsBackend) Set(context.Context, string, string) error       { return nil }
+func (f *fakeSecretsBackend) Values(_ context.Context, minLen int) ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := f.vals[:0]
+	for _, v := range f.vals {
+		if len(v) >= minLen {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
+// TestLoadSecretsFromBackend_ExcludesEmails verifies the shared entry point
+// drops email address values (identifiers, not credentials) but keeps every
+// other secret in the backend's deterministic (sorted) order.
+func TestLoadSecretsFromBackend_ExcludesEmails(t *testing.T) {
+	be := &fakeSecretsBackend{vals: []string{
+		"sk-secret-a-1234567890",
+		"admin@example.com",
+		"sk-secret-b-1234567890",
+		"user name@corp.example",
+	}}
+
+	secrets, err := LoadSecretsFromBackend(be, 8)
+	if err != nil {
+		t.Fatalf("LoadSecretsFromBackend: %v", err)
+	}
+	want := []string{"sk-secret-a-1234567890", "sk-secret-b-1234567890"}
+	if len(secrets) != len(want) {
+		t.Fatalf("secrets = %v, want %v (emails excluded)", secrets, want)
+	}
+	for i := range want {
+		if secrets[i] != want[i] {
+			t.Fatalf("secrets = %v, want %v (order preserved)", secrets, want)
+		}
+	}
+}
+
+// TestLoadSecretsFromBackend_FailsClosed verifies a backend error aborts the
+// load: the proxy must never start with a partial secret set.
+func TestLoadSecretsFromBackend_FailsClosed(t *testing.T) {
+	be := &fakeSecretsBackend{err: errors.New("vault unavailable")}
+	if _, err := LoadSecretsFromBackend(be, 8); err == nil {
+		t.Fatal("expected fail-closed error on backend failure")
+	}
+}
+
+// TestLoadSecretsFromBackend_MinLenFiltering verifies the min-length filter
+// keeps short non-secret values out of the armed set.
+func TestLoadSecretsFromBackend_MinLenFiltering(t *testing.T) {
+	be := &fakeSecretsBackend{vals: []string{"short", "sk-long-enough-secret-123456", ""}}
+	secrets, err := LoadSecretsFromBackend(be, 8)
+	if err != nil {
+		t.Fatalf("LoadSecretsFromBackend: %v", err)
+	}
+	if len(secrets) != 1 || secrets[0] != "sk-long-enough-secret-123456" {
+		t.Fatalf("secrets = %v, want only the long value", secrets)
+	}
+}
 
 // loadTestPatterns returns the bundled pattern set, failing the test if the
 // embedded rules.toml cannot be loaded.
