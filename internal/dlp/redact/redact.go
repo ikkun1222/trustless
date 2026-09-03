@@ -18,15 +18,42 @@ const Marker = "<redacted>"
 // IsEmail reports whether s looks like an email address (an identifier,
 // not a credential). Email addresses appear naturally in diffs, docs, and
 // message footers, so masking them destroys readability for zero security
-// value. A value must contain "@" with a non-empty local part and a
-// dot-containing domain to count as an email.
+// value.
+//
+// The boundary is strict (fail-closed toward masking): exactly one "@",
+// no whitespace anywhere, a non-empty local part, a dot-containing domain,
+// and an all-letter TLD of at least 2 characters. Anything else (e.g.
+// "a@b.c", "user name@corp.example") is treated as a credential and masked.
 func IsEmail(s string) bool {
-	at := strings.IndexByte(s, '@')
-	if at <= 0 || at == len(s)-1 {
+	if s == "" || strings.ContainsAny(s, " \t\n\r/\\") {
 		return false
 	}
-	domain := s[at+1:]
-	return strings.Contains(domain, ".") && !strings.ContainsAny(domain, "/\\ \t")
+	if strings.Count(s, "@") != 1 {
+		return false
+	}
+	at := strings.IndexByte(s, '@')
+	local, domain := s[:at], s[at+1:]
+	if local == "" || domain == "" {
+		return false
+	}
+	dot := strings.LastIndexByte(domain, '.')
+	if dot <= 0 || dot == len(domain)-1 {
+		return false
+	}
+	tld := domain[dot+1:]
+	if len(tld) < 2 {
+		return false
+	}
+	for i := 0; i < len(tld); i++ {
+		if !isASCIILetter(tld[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIILetter(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 // ScanAndRedact masks every occurrence of any secret (length >= minLen) that

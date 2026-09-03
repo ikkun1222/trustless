@@ -330,7 +330,11 @@ func start(args []string, be backend.Backend, cfg *config.Config) {
 	p.SetAudit(audit.New(kind, cfg.Audit.File, cfg.Audit.Buffer))
 
 	if *mitm {
-		caCfg := DefaultCAPaths()
+		caCfg, caPathErr := DefaultCAPaths()
+		if caPathErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: MITM CA setup failed: %v\n", caPathErr)
+			os.Exit(2)
+		}
 		var caErr error
 		p.ca, caErr = LoadOrGenerateCA(caCfg)
 		if caErr != nil {
@@ -393,7 +397,10 @@ func StartForward(ctx context.Context, be backend.Backend, cfg *config.Config, p
 	p.SetAudit(sink)
 
 	if mitm {
-		caCfg := DefaultCAPaths()
+		caCfg, err := DefaultCAPaths()
+		if err != nil {
+			return nil, fmt.Errorf("MITM CA setup failed: %w", err)
+		}
 		ca, err := LoadOrGenerateCA(caCfg)
 		if err != nil {
 			return nil, fmt.Errorf("MITM CA setup failed: %w", err)

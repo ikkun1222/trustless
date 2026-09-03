@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,10 @@ func TestGenerateCA_CreatesCertAndKeyFiles(t *testing.T) {
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil {
 		t.Fatal("key file contains no PEM block")
+	}
+	// PKCS#8 DER に対する正しいブロックタイプ。
+	if keyBlock.Type != "PRIVATE KEY" {
+		t.Fatalf("key PEM type = %q, want PRIVATE KEY", keyBlock.Type)
 	}
 
 	fi, err := os.Stat(cfg.KeyPath)
@@ -192,16 +197,58 @@ func TestLeafCert_RejectsEmptyHostname(t *testing.T) {
 		t.Fatalf("GenerateCA: %v", err)
 	}
 
-	leaf, err := ca.LeafCert("")
-	if err != nil {
-		t.Fatalf("LeafCert with empty hostname should not error: %v", err)
+	if _, err := ca.LeafCert(""); err == nil {
+		t.Fatal(`LeafCert("") = nil, want error for empty hostname`)
 	}
-	leafCert, err := x509.ParseCertificate(leaf.Certificate[0])
-	if err != nil {
-		t.Fatalf("parse leaf: %v", err)
+}
+
+func TestSavePEM_CorrectsExistingKeyMode(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "k.key")
+	if err := os.WriteFile(keyPath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if got := leafCert.Subject.CommonName; got != "" {
-		t.Fatalf("CN = %q, want empty", got)
+	if err := savePEM(keyPath, 0o600, "PRIVATE KEY", []byte("dummy-der")); err != nil {
+		t.Fatalf("savePEM: %v", err)
+	}
+	fi, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("key mode = %04o, want 0600", perm)
+	}
+}
+
+func TestSavePEM_WriteErrorReturnsError(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/dev/full is Linux-specific")
+	}
+	// /dev/full への書き込みは ENOSPC で失敗する: 中途半端な成功にせず
+	// エラーを返すこと（部分ファイルの削除は os.Remove の成否によらず試行）。
+	if err := savePEM("/dev/full", 0o600, "PRIVATE KEY", []byte("dummy-der")); err == nil {
+		t.Fatal("savePEM to /dev/full = nil, want write error")
+	}
+}
+
+func TestLoadOrGenerateCA_CorruptErrorHasRepairSteps(t *testing.T) {
+	dir := t.TempDir()
+	cfg := CAConfig{CertPath: filepath.Join(dir, "ca.crt"), KeyPath: filepath.Join(dir, "ca.key")}
+	if _, err := GenerateCA(cfg); err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+	if err := os.WriteFile(cfg.CertPath, []byte("not a pem"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 破損 CA は自動再生成せずエラーにし、修復手順を示すこと。
+	_, err := LoadOrGenerateCA(cfg)
+	if err == nil {
+		t.Fatal("LoadOrGenerateCA accepted a corrupt CA, want error (no auto-regeneration)")
+	}
+	for _, want := range []string{"back up", "delete", "regenerate", "re-trust"} {
+		if !strings.Contains(strings.ToLower(err.Error()), want) {
+			t.Errorf("corrupt CA error = %q, want it to mention %q", err, want)
+		}
 	}
 }
 
@@ -209,7 +256,11 @@ func TestDefaultCAPaths_UsesTrustlessConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	paths := DefaultCAPaths()
+	// UserHomeDir エラーは無視せず error として返す契約。
+	paths, err := DefaultCAPaths()
+	if err != nil {
+		t.Fatalf("DefaultCAPaths: %v", err)
+	}
 	if !strings.HasSuffix(paths.CertPath, caCertName) {
 		t.Fatalf("cert path %q does not end with %q", paths.CertPath, caCertName)
 	}

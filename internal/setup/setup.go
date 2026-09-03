@@ -194,7 +194,7 @@ func stepEnvImport(ctx context.Context, opts *SetupOptions, importDirs []string)
 	}
 	backupDir := filepath.Join(home, fmt.Sprintf(".env-backup-%s", time.Now().Format("20060102")))
 
-	if err := ImportToPass(envFiles, backupDir); err != nil {
+	if err := ImportToPass(envFiles); err != nil {
 		fmt.Printf("  %s\u2717%s Failed to import: %v\n", red, reset, err)
 		if !opts.NonInteractive && promptConfirm("Continue anyway?", false) {
 			return nil
@@ -213,7 +213,7 @@ func stepEnvImport(ctx context.Context, opts *SetupOptions, importDirs []string)
 		}
 		fmt.Printf("  %s\u2713%s Backed up to %s%s%s\n", green, reset, cyan, backupDir, reset)
 
-		if err := RemoveEnvFiles(envFiles); err != nil {
+		if err := RemoveEnvFiles(envFiles, backupDir); err != nil {
 			fmt.Printf("  %s\u2717%s Removal failed: %v\n", red, reset, err)
 			if !opts.NonInteractive && promptConfirm("Continue anyway?", false) {
 				return nil

@@ -5,13 +5,18 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
 
 	"github.com/ikkun1222/trustless/internal/backend"
 	"github.com/ikkun1222/trustless/internal/config"
 )
 
-// mockBackend is a minimal in-memory Backend for proxy tests.
+// mockBackend is the Resolve-driven fake for proxy injection-path tests
+// (substituteRequest). It is NOT a DLP secret-list fake: unlike dlp's
+// fakeSecretsBackend (Values-driven), it is scripted by key→value map.
+// Values mirrors the same map (minLen-filtered, sorted) so reusing this
+// fake in a DLP-style path can never silently yield an empty secret set.
 type mockBackend struct {
 	values map[string]string
 }
@@ -24,7 +29,16 @@ func (m *mockBackend) Resolve(_ context.Context, key string) (string, error) {
 }
 func (m *mockBackend) List(context.Context) ([]backend.Entry, error) { return nil, nil }
 func (m *mockBackend) Set(context.Context, string, string) error     { return errors.New("read only") }
-func (m *mockBackend) Values(context.Context, int) ([]string, error) { return nil, nil }
+func (m *mockBackend) Values(_ context.Context, minLen int) ([]string, error) {
+	var out []string
+	for _, v := range m.values {
+		if len(v) >= minLen {
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
 
 func newTestProxy(rules map[string]config.ProxyRule, allowlist []string) *Proxy {
 	return &Proxy{
@@ -36,6 +50,29 @@ func newTestProxy(rules map[string]config.ProxyRule, allowlist []string) *Proxy 
 		}},
 		rules:     rules,
 		allowlist: allowlist,
+	}
+}
+
+// TestMockBackend_ValuesMirrorsResolveMap pins the fake contract: Values
+// reflects the same scripted map Resolve serves (no silent nil,nil).
+func TestMockBackend_ValuesMirrorsResolveMap(t *testing.T) {
+	be := &mockBackend{values: map[string]string{
+		"xai":   "sk-test-xai-12345",
+		"tiny":  "short",
+		"estat": "ESTAT-APPID-999",
+	}}
+	got, err := be.Values(context.Background(), 8)
+	if err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	want := []string{"ESTAT-APPID-999", "sk-test-xai-12345"}
+	if len(got) != len(want) {
+		t.Fatalf("Values = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Values = %v, want %v (sorted)", got, want)
+		}
 	}
 }
 

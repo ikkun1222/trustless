@@ -34,12 +34,19 @@ type runResult struct {
 	Stderr   string `json:"stderr"`
 }
 
+// CheckPolicy はコマンドの base 名を小文字化してから denied リストと照合
+// する（"SH"/"Curl" 等の大文字小文字混在での回避を防ぐ）。
+//
+// 注意: これは完全なサンドボックスではない。env 経由（PATH 差し替え・
+// LD_PRELOAD 等）やラッパースクリプト経由で別名実行されると回避され得る。
+// あくまで誤用・偶発実行の防止層と位置づける。
 func CheckPolicy(cmdName string, secretKeys []string, policy config.PolicyConfig) error {
+	want := strings.ToLower(cmdName)
 	for _, key := range secretKeys {
 		for _, override := range policy.Overrides {
 			if override.SecretKey == key {
 				for _, denied := range override.DeniedCommands {
-					if cmdName == denied {
+					if want == strings.ToLower(denied) {
 						return fmt.Errorf("policy violation: credential %q is not allowed with command %q", key, cmdName)
 					}
 				}
@@ -47,7 +54,7 @@ func CheckPolicy(cmdName string, secretKeys []string, policy config.PolicyConfig
 		}
 	}
 	for _, denied := range policy.Default.DeniedCommands {
-		if cmdName == denied {
+		if want == strings.ToLower(denied) {
 			return fmt.Errorf("policy violation: command %q is denied by default policy", cmdName)
 		}
 	}
@@ -101,10 +108,20 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 	ctx, cancel := buildContext(*timeoutStr)
 	defer cancel()
 
-	env, credValues := resolveSecrets(ctx, secrets, be)
+	// ライブラリ層は error を返すのみで、os.Exit はコマンド入口の Run だけが
+	// 行う（テスト可能な薄い層に分離）。
+	env, credValues, err := resolveSecrets(ctx, secrets, be)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
+	}
 
 	sanitize := *sanitizeFlag && cfg.RunDefaults.Sanitize
-	s := buildScanner(sanitize, cfg, *sanitizePolicy)
+	s, err := buildScanner(sanitize, cfg, *sanitizePolicy)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
+	}
 
 	if *scanArgs && s != nil {
 		if s.ContainsCredentials([]byte(strings.Join(cmdArgs, " ")), credValues) {
@@ -132,7 +149,10 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 	})
 
 	if *jsonOutput {
-		runJSON(cmd, sanitize, s, credValues)
+		if err := runJSON(cmd, sanitize, s, credValues, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	} else {
 		runPassthrough(cmd, sanitize, s, credValues)
 	}
@@ -142,6 +162,42 @@ func envVarName(key string) string {
 	last := path.Base(key)
 	last = strings.ReplaceAll(last, "-", "_")
 	return strings.ToUpper(last)
+}
+
+// resolveEnvNames computes the environment variable name for each secret
+// spec (KEY or KEY:ENVNAME). It fails closed on collision: duplicate names
+// within one invocation, or shadowing an existing process variable, would
+// silently overwrite — the wrong value under the wrong name — so both are
+// errors.
+func resolveEnvNames(secrets stringSlice, baseEnv []string) ([]string, error) {
+	existing := make(map[string]struct{}, len(baseEnv))
+	for _, kv := range baseEnv {
+		if name, _, ok := strings.Cut(kv, "="); ok {
+			existing[name] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(secrets))
+	seen := make(map[string]string, len(secrets))
+	for _, spec := range secrets {
+		var envName string
+		if colon := strings.Index(spec, ":"); colon >= 0 {
+			envName = spec[colon+1:]
+		} else {
+			envName = envVarName(spec)
+		}
+		if envName == "" {
+			return nil, fmt.Errorf("empty environment variable name for secret %q", spec)
+		}
+		if prev, dup := seen[envName]; dup {
+			return nil, fmt.Errorf("environment variable %q collides: %q and %q map to the same name", envName, prev, spec)
+		}
+		if _, exists := existing[envName]; exists {
+			return nil, fmt.Errorf("environment variable %q already exists; refusing to overwrite (secret %q)", envName, spec)
+		}
+		seen[envName] = spec
+		names = append(names, envName)
+	}
+	return names, nil
 }
 
 func extractSecretKeys(secrets stringSlice) []string {
@@ -169,45 +225,42 @@ func buildContext(timeoutStr string) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, d)
 }
 
-func resolveSecrets(ctx context.Context, secrets stringSlice, be backend.Backend) ([]string, []string) {
+func resolveSecrets(ctx context.Context, secrets stringSlice, be backend.Backend) ([]string, []string, error) {
 	env := os.Environ()
+	names, err := resolveEnvNames(secrets, env)
+	if err != nil {
+		return nil, nil, err
+	}
 	var credValues []string
-	for _, spec := range secrets {
-		var secretKey, envName string
+	for i, spec := range secrets {
+		secretKey := spec
 		if colon := strings.Index(spec, ":"); colon >= 0 {
 			secretKey = spec[:colon]
-			envName = spec[colon+1:]
-		} else {
-			secretKey = spec
-			envName = envVarName(spec)
 		}
 		val, err := be.Resolve(ctx, secretKey)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(2)
+			return nil, nil, err
 		}
-		env = append(env, envName+"="+val)
+		env = append(env, names[i]+"="+val)
 		credValues = append(credValues, val)
 	}
-	return env, credValues
+	return env, credValues, nil
 }
 
-func buildScanner(sanitize bool, cfg *config.Config, sanitizePolicy string) *scanner.Scanner {
+func buildScanner(sanitize bool, cfg *config.Config, sanitizePolicy string) (*scanner.Scanner, error) {
 	if !sanitize {
-		return nil
+		return nil, nil
 	}
 	s := scanner.New()
 	for _, p := range cfg.Sanitize.Patterns {
 		if err := s.AddPattern(p); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: invalid pattern in config: %v\n", err)
-			os.Exit(2)
+			return nil, fmt.Errorf("invalid pattern in config: %w", err)
 		}
 	}
 	if sanitizePolicy != "" {
 		data, err := os.ReadFile(sanitizePolicy)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: reading sanitize policy: %v\n", err)
-			os.Exit(2)
+			return nil, fmt.Errorf("reading sanitize policy: %w", err)
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
@@ -215,12 +268,11 @@ func buildScanner(sanitize bool, cfg *config.Config, sanitizePolicy string) *sca
 				continue
 			}
 			if err := s.AddPattern(line); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: invalid pattern in policy file: %v\n", err)
-				os.Exit(2)
+				return nil, fmt.Errorf("invalid pattern in policy file: %w", err)
 			}
 		}
 	}
-	return s
+	return s, nil
 }
 
 // sanitizingWriter streams child output through the credential scanner line by
@@ -292,29 +344,28 @@ func runPassthrough(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValue
 	}
 }
 
-func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []string) {
+// runJSON runs cmd, sanitizes its output, and encodes the result as JSON to
+// stdout (injected as io.Writer so tests never swap os.Stdout).
+func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []string, stdout io.Writer) error {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("start command: %w", err)
 	}
 
-	stdout, _ := io.ReadAll(stdoutPipe)
-	stderr, _ := io.ReadAll(stderrPipe)
+	rawOut, _ := io.ReadAll(stdoutPipe)
+	rawErr, _ := io.ReadAll(stderrPipe)
 
 	if sanitize {
-		stdout = s.ScanWithValues(stdout, extraValues)
-		stderr = s.ScanWithValues(stderr, extraValues)
+		rawOut = s.ScanWithValues(rawOut, extraValues)
+		rawErr = s.ScanWithValues(rawErr, extraValues)
 	}
 
 	exitCode := 0
@@ -323,21 +374,20 @@ func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []str
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		} else {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("wait command: %w", err)
 		}
 	}
 
 	res := runResult{
 		ExitCode: exitCode,
-		Stdout:   string(stdout),
-		Stderr:   string(stderr),
+		Stdout:   string(rawOut),
+		Stderr:   string(rawErr),
 	}
 
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(stdout)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(res); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("encode result: %w", err)
 	}
+	return nil
 }

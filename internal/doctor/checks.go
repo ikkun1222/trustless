@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ikkun1222/trustless/internal/envscan"
 )
 
 type CheckStatus int
@@ -257,52 +259,24 @@ func CheckEnvFiles() CheckResult {
 	}
 
 	patterns := []string{"API_KEY", "TOKEN", "SECRET", "PASSWORD"}
-	searchDirs := []string{home, filepath.Join(home, "projects")}
+	// home 走査が home/projects を既に含むため重複排除（二重走査防止）。
+	searchDirs := dedupeSearchDirs([]string{home, filepath.Join(home, "projects")})
 	var found []string
-
+	var walkErrs int
 	for _, dir := range searchDirs {
-		filepath.WalkDir(dir, func(path string, d os.DirEntry, _ error) error {
-			if d != nil && d.IsDir() {
-				base := d.Name()
-				if base == ".git" || base == ".config" || base == "node_modules" || base == ".cache" || base == ".password-store" || base == ".gnupg" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if d == nil || d.Name() != ".env" {
-				return nil
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-			for _, line := range strings.Split(string(data), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-				for _, p := range patterns {
-					if strings.Contains(line, p) {
-						found = append(found, path)
-						return nil
-					}
-				}
-			}
-			return nil
-		})
+		walkErrs += scanEnvDir(dir, patterns, &found)
+	}
+	if walkErrs > 0 {
+		fmt.Fprintf(os.Stderr, "doctor: .env scan skipped %d unreadable path(s)\n", walkErrs)
 	}
 
 	if len(found) > 0 {
-		files := found
+		// 自動修復はしない（ヒント文だけの Fix を謳わない）: Fixable は false
+		// のままにし、移行手順をメッセージに含める。
 		return CheckResult{
 			Name:    ".env scan",
 			Status:  StatusWarning,
-			Message: fmt.Sprintf("%d .env file(s) with plaintext credentials", len(found)),
-			Fixable: true,
-			Fix: func() error {
-				printEnvFileFixHint(files)
-				return nil
-			},
+			Message: fmt.Sprintf("%d .env file(s) with plaintext credentials — run 'trustless setup --import-dir <directory>' to import them into pass", len(found)),
 		}
 	}
 
@@ -313,39 +287,111 @@ func CheckEnvFiles() CheckResult {
 	}
 }
 
-// printEnvFileFixHint lists the plaintext .env files and points at setup.
-func printEnvFileFixHint(files []string) {
-	for _, f := range files {
-		fmt.Fprintf(os.Stderr, "  .env with credentials: %s\n", f)
+// dedupeSearchDirs drops dirs nested under an earlier dir (e.g. ~/projects
+// under ~, or exact duplicates) so WalkDir never scans the same tree twice.
+func dedupeSearchDirs(dirs []string) []string {
+	var out []string
+	for _, d := range dirs {
+		nested := false
+		for _, kept := range out {
+			if isNestedPath(kept, d) {
+				nested = true
+				break
+			}
+		}
+		if !nested {
+			out = append(out, d)
+		}
 	}
-	fmt.Fprintln(os.Stderr, "  Run: trustless setup --import-dir <directory> to import them into pass")
+	return out
 }
 
+// isNestedPath reports whether child resolves inside parent (or equals it).
+func isNestedPath(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// scanEnvDir walks dir for ".env" files containing credential patterns,
+// appending matches to found. Unreadable paths are counted and skipped so a
+// single bad dir cannot fail the whole scan (the caller warns with the count).
+func scanEnvDir(dir string, patterns []string, found *[]string) (walkErrs int) {
+	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
+			if err != nil {
+				walkErrs++
+			}
+			return nil
+		}
+		if d.IsDir() {
+			// 除外ルールは setup と共有 (envscan.SkipDir)。
+			if envscan.SkipDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !envscan.IsEnvFile(d.Name()) {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			walkErrs++
+			return nil
+		}
+		if envDataHasSecrets(data, patterns) {
+			*found = append(*found, path)
+		}
+		return nil
+	})
+	return walkErrs
+}
+
+// envDataHasSecrets は setup と同一の判定 (envscan.ContainsSecret) への薄い
+// 別名。呼び出し側のシグネチャを変えずに共有実装を使う。
+func envDataHasSecrets(data []byte, patterns []string) bool {
+	return envscan.ContainsSecret(data, patterns)
+}
+
+// CheckAgentIntegration walks every candidate path: any existing file that
+// is not trustless-configured makes the agent need a fix (a single
+// configured file no longer masks a raw sibling, e.g. opencode.json vs
+// providers.yaml).
 func CheckAgentIntegration(name string, configPaths []string, fn AgentCheckFn) CheckResult {
+	var found, unconfigured string
 	for _, p := range configPaths {
 		data, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
-		configured := fn(data)
-		if configured {
-			return CheckResult{
-				Name:    name,
-				Status:  StatusOK,
-				Message: fmt.Sprintf("%s configured (%s)", name, filepath.Base(p)),
-			}
+		if found == "" {
+			found = p
 		}
+		if !fn(data) && unconfigured == "" {
+			unconfigured = p
+		}
+	}
+	if found == "" {
+		return CheckResult{
+			Name:    name,
+			Status:  StatusInfo,
+			Message: fmt.Sprintf("%s not detected", name),
+		}
+	}
+	if unconfigured != "" {
 		return CheckResult{
 			Name:    name,
 			Status:  StatusWarning,
-			Message: fmt.Sprintf("%s not configured for trustless (%s)", name, filepath.Base(p)),
+			Message: fmt.Sprintf("%s not configured for trustless (%s)", name, filepath.Base(unconfigured)),
 			Fixable: true,
 		}
 	}
 	return CheckResult{
 		Name:    name,
-		Status:  StatusInfo,
-		Message: fmt.Sprintf("%s not detected", name),
+		Status:  StatusOK,
+		Message: fmt.Sprintf("%s configured (%s)", name, filepath.Base(found)),
 	}
 }
 
