@@ -185,6 +185,40 @@ func TestStatusDisplay_DistinguishesWarningFromError(t *testing.T) {
 	}
 }
 
+func TestCheckAgentIntegration_ScansAllPaths(t *testing.T) {
+	dir := t.TempDir()
+	configured := filepath.Join(dir, "configured.json")
+	raw := filepath.Join(dir, "raw.json")
+	if err := os.WriteFile(configured, []byte(`{"x": "trustless"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(raw, []byte(`{"apiKey": "sk-raw"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fn := func(data []byte) bool { return strings.Contains(string(data), "trustless") }
+
+	// 先頭が configured でも、後続に未 trustless 化があれば要修正。
+	r := CheckAgentIntegration("Test", []string{configured, raw}, fn)
+	if r.Status != StatusWarning {
+		t.Fatalf("configured-first = %v (%s), want StatusWarning", r.Status, r.Message)
+	}
+	// 順序を入れ替えても同じ判定。
+	r = CheckAgentIntegration("Test", []string{raw, configured}, fn)
+	if r.Status != StatusWarning {
+		t.Fatalf("raw-first = %v (%s), want StatusWarning", r.Status, r.Message)
+	}
+	// 全て configured なら OK。
+	r = CheckAgentIntegration("Test", []string{configured}, fn)
+	if r.Status != StatusOK {
+		t.Fatalf("all-configured = %v (%s), want StatusOK", r.Status, r.Message)
+	}
+	// 存在ファイルなしは Info（未検出）。
+	r = CheckAgentIntegration("Test", []string{filepath.Join(dir, "missing.json")}, fn)
+	if r.Status != StatusInfo {
+		t.Fatalf("missing = %v (%s), want StatusInfo", r.Status, r.Message)
+	}
+}
+
 func TestExitCode(t *testing.T) {
 	// StatusError が1つでもあれば gate は失敗(1)。警告・情報のみなら成功(0)。
 	tests := []struct {

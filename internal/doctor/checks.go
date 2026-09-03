@@ -355,31 +355,43 @@ func envDataHasSecrets(data []byte, patterns []string) bool {
 	return envscan.ContainsSecret(data, patterns)
 }
 
+// CheckAgentIntegration walks every candidate path: any existing file that
+// is not trustless-configured makes the agent need a fix (a single
+// configured file no longer masks a raw sibling, e.g. opencode.json vs
+// providers.yaml).
 func CheckAgentIntegration(name string, configPaths []string, fn AgentCheckFn) CheckResult {
+	var found, unconfigured string
 	for _, p := range configPaths {
 		data, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
-		configured := fn(data)
-		if configured {
-			return CheckResult{
-				Name:    name,
-				Status:  StatusOK,
-				Message: fmt.Sprintf("%s configured (%s)", name, filepath.Base(p)),
-			}
+		if found == "" {
+			found = p
 		}
+		if !fn(data) && unconfigured == "" {
+			unconfigured = p
+		}
+	}
+	if found == "" {
+		return CheckResult{
+			Name:    name,
+			Status:  StatusInfo,
+			Message: fmt.Sprintf("%s not detected", name),
+		}
+	}
+	if unconfigured != "" {
 		return CheckResult{
 			Name:    name,
 			Status:  StatusWarning,
-			Message: fmt.Sprintf("%s not configured for trustless (%s)", name, filepath.Base(p)),
+			Message: fmt.Sprintf("%s not configured for trustless (%s)", name, filepath.Base(unconfigured)),
 			Fixable: true,
 		}
 	}
 	return CheckResult{
 		Name:    name,
-		Status:  StatusInfo,
-		Message: fmt.Sprintf("%s not detected", name),
+		Status:  StatusOK,
+		Message: fmt.Sprintf("%s configured (%s)", name, filepath.Base(found)),
 	}
 }
 
