@@ -155,6 +155,42 @@ func TestCheckPolicy_DefaultDeniedCommands(t *testing.T) {
 	}
 }
 
+func TestCheckPolicy_CaseInsensitiveDenial(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Policy.Default.DeniedCommands = []string{"sh", "Curl"}
+	cfg.Policy.Overrides = []config.PolicyOverride{
+		{SecretKey: "iria/api/xai", PolicyRule: config.PolicyRule{DeniedCommands: []string{"Wget"}}},
+	}
+
+	denied := []struct {
+		cmd  string
+		keys []string
+	}{
+		{"SH", nil},
+		{"Sh", nil},
+		{"sh", nil},
+		{"CURL", nil},
+		{"curl", nil},
+		{"Curl", nil},
+		{"WGET", []string{"iria/api/xai"}},
+		{"wget", []string{"iria/api/xai"}},
+		{"Wget", []string{"iria/api/xai"}},
+	}
+	for _, tc := range denied {
+		if err := CheckPolicy(tc.cmd, tc.keys, cfg.Policy); err == nil {
+			t.Errorf("CheckPolicy(%q) = nil, want denial", tc.cmd)
+		}
+	}
+
+	// 許可コマンド・無関係キーは大文字でも通ること。
+	if err := CheckPolicy("PYTHON3", nil, cfg.Policy); err != nil {
+		t.Errorf("CheckPolicy(PYTHON3) = %v, want nil", err)
+	}
+	if err := CheckPolicy("WGET", []string{"other-secret"}, cfg.Policy); err != nil {
+		t.Errorf("CheckPolicy(WGET, unrelated key) = %v, want nil", err)
+	}
+}
+
 func TestEnvVarName_DerivesSafeEnvName(t *testing.T) {
 	cases := map[string]string{
 		"iria/api/xai":     "XAI",

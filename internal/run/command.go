@@ -34,12 +34,19 @@ type runResult struct {
 	Stderr   string `json:"stderr"`
 }
 
+// CheckPolicy はコマンドの base 名を小文字化してから denied リストと照合
+// する（"SH"/"Curl" 等の大文字小文字混在での回避を防ぐ）。
+//
+// 注意: これは完全なサンドボックスではない。env 経由（PATH 差し替え・
+// LD_PRELOAD 等）やラッパースクリプト経由で別名実行されると回避され得る。
+// あくまで誤用・偶発実行の防止層と位置づける。
 func CheckPolicy(cmdName string, secretKeys []string, policy config.PolicyConfig) error {
+	want := strings.ToLower(cmdName)
 	for _, key := range secretKeys {
 		for _, override := range policy.Overrides {
 			if override.SecretKey == key {
 				for _, denied := range override.DeniedCommands {
-					if cmdName == denied {
+					if want == strings.ToLower(denied) {
 						return fmt.Errorf("policy violation: credential %q is not allowed with command %q", key, cmdName)
 					}
 				}
@@ -47,7 +54,7 @@ func CheckPolicy(cmdName string, secretKeys []string, policy config.PolicyConfig
 		}
 	}
 	for _, denied := range policy.Default.DeniedCommands {
-		if cmdName == denied {
+		if want == strings.ToLower(denied) {
 			return fmt.Errorf("policy violation: command %q is denied by default policy", cmdName)
 		}
 	}
