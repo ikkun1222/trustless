@@ -179,18 +179,23 @@ func fileMode(t *testing.T, path string) os.FileMode {
 }
 func TestScanEnvFiles_RecursesIntoNestedDirs(t *testing.T) {
 	// The walk is recursive over the given search root: any .env below it is
-	// scanned, including files that look like backup copies. Keeping backups
-	// outside the scanned tree is the caller's responsibility.
+	// scanned — except excluded dirs (shared with doctor via envscan).
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, ".env"), "A=1\n")
+	writeTestFile(t, filepath.Join(root, "sub", "deep", ".env"), "SUB=1\n")
+	// Backup roots inside the tree must NOT be re-imported …
 	writeTestFile(t, filepath.Join(root, "backup", "b", "c", ".env"), "OLD=1\n")
+	writeTestFile(t, filepath.Join(root, ".env-backup-20260101", ".env"), "OLD=1\n")
+	// … nor must VCS/tooling trees (same rules as doctor's scan).
+	writeTestFile(t, filepath.Join(root, ".git", ".env"), "SKIP=1\n")
+	writeTestFile(t, filepath.Join(root, "node_modules", "pkg", ".env"), "SKIP=1\n")
 
 	envFiles, err := ScanEnvFiles([]string{root})
 	if err != nil {
 		t.Fatalf("ScanEnvFiles: %v", err)
 	}
 	if len(envFiles) != 2 {
-		t.Fatalf("found %d env files, want 2 (nested .env included): %+v", len(envFiles), envFiles)
+		t.Fatalf("found %d env files, want 2 (nested .env only): %+v", len(envFiles), envFiles)
 	}
 }
 

@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/ikkun1222/trustless/internal/envscan"
 )
 
 type EnvFile struct {
@@ -16,10 +17,9 @@ type EnvFile struct {
 	Entries []EnvEntry
 }
 
-type EnvEntry struct {
-	Key   string
-	Value string
-}
+// EnvEntry aliases the shared envscan entry type so setup and doctor parse
+// .env lines identically (quotes preserved verbatim — see envscan).
+type EnvEntry = envscan.Entry
 
 func ScanEnvFiles(searchPaths []string) ([]EnvFile, error) {
 	var envFiles []EnvFile
@@ -35,10 +35,15 @@ func ScanEnvFiles(searchPaths []string) ([]EnvFile, error) {
 			if err != nil {
 				return err
 			}
+			// 除外ルールは doctor と共有 (envscan.SkipDir)。backup ツリー内に
+			// 置かれたコピーを再取り込みしない。
 			if d.IsDir() {
+				if envscan.SkipDir(d.Name()) {
+					return filepath.SkipDir
+				}
 				return nil
 			}
-			if d.Name() != ".env" {
+			if !envscan.IsEnvFile(d.Name()) {
 				return nil
 			}
 			if seen[path] {
@@ -46,33 +51,11 @@ func ScanEnvFiles(searchPaths []string) ([]EnvFile, error) {
 			}
 			seen[path] = true
 
-			f, err := os.Open(path)
+			data, err := os.ReadFile(path)
 			if err != nil {
 				return fmt.Errorf("failed to open %s: %w", path, err)
 			}
-			defer f.Close()
-
-			var entries []EnvEntry
-			scanner := bufio.NewScanner(f)
-			for scanner.Scan() {
-				line := strings.TrimSpace(scanner.Text())
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-				key, value, ok := strings.Cut(line, "=")
-				if !ok {
-					continue
-				}
-				key = strings.TrimSpace(key)
-				value = strings.TrimSpace(value)
-				if key == "" {
-					continue
-				}
-				entries = append(entries, EnvEntry{Key: key, Value: value})
-			}
-			if err := scanner.Err(); err != nil {
-				return fmt.Errorf("error reading %s: %w", path, err)
-			}
+			entries := envscan.ParseEntries(data)
 
 			if len(entries) > 0 {
 				envFiles = append(envFiles, EnvFile{Path: path, Entries: entries})

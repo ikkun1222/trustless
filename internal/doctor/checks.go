@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ikkun1222/trustless/internal/envscan"
 )
 
 type CheckStatus int
@@ -285,13 +287,6 @@ func CheckEnvFiles() CheckResult {
 	}
 }
 
-// skippedEnvScanDirs は .env 走査から除外するディレクトリ名。巨大・機密系
-// ツリーの走査コストと誤検知を避ける。
-var skippedEnvScanDirs = map[string]struct{}{
-	".git": {}, ".config": {}, "node_modules": {},
-	".cache": {}, ".password-store": {}, ".gnupg": {},
-}
-
 // dedupeSearchDirs drops dirs nested under an earlier dir (e.g. ~/projects
 // under ~, or exact duplicates) so WalkDir never scans the same tree twice.
 func dedupeSearchDirs(dirs []string) []string {
@@ -332,12 +327,13 @@ func scanEnvDir(dir string, patterns []string, found *[]string) (walkErrs int) {
 			return nil
 		}
 		if d.IsDir() {
-			if _, skip := skippedEnvScanDirs[d.Name()]; skip {
+			// 除外ルールは setup と共有 (envscan.SkipDir)。
+			if envscan.SkipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if d.Name() != ".env" {
+		if !envscan.IsEnvFile(d.Name()) {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -353,20 +349,10 @@ func scanEnvDir(dir string, patterns []string, found *[]string) (walkErrs int) {
 	return walkErrs
 }
 
-// envDataHasSecrets reports whether .env content has a credential-like line.
+// envDataHasSecrets は setup と同一の判定 (envscan.ContainsSecret) への薄い
+// 別名。呼び出し側のシグネチャを変えずに共有実装を使う。
 func envDataHasSecrets(data []byte, patterns []string) bool {
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		for _, p := range patterns {
-			if strings.Contains(line, p) {
-				return true
-			}
-		}
-	}
-	return false
+	return envscan.ContainsSecret(data, patterns)
 }
 
 func CheckAgentIntegration(name string, configPaths []string, fn AgentCheckFn) CheckResult {
