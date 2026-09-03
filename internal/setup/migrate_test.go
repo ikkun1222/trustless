@@ -1,9 +1,11 @@
 package setup
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -235,26 +237,56 @@ func TestScanEnvFiles_RecursesIntoNestedDirs(t *testing.T) {
 	}
 }
 
-func TestRemoveEnvFiles_RemovesAndReportsMissing(t *testing.T) {
-	dir := t.TempDir()
-	p1 := filepath.Join(dir, "a.env")
-	p2 := filepath.Join(dir, "b.env")
-	for _, p := range []string{p1, p2} {
+func TestRemoveEnvFiles_DeletesOnlyEnvFilesWithBackup(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	backupDir := filepath.Join(root, "backup")
+
+	dotenv := filepath.Join(root, "sub", ".env")
+	dotenvVariant := filepath.Join(root, "sub", ".env.local")
+	other := filepath.Join(root, "sub", "a.env")
+	for _, p := range []string{dotenv, dotenvVariant, other} {
 		writeTestFile(t, p, "K=V\n")
 	}
+	envFiles := []EnvFile{{Path: dotenv}, {Path: dotenvVariant}, {Path: other}}
+	if err := BackupEnvFiles(envFiles, backupDir); err != nil {
+		t.Fatalf("BackupEnvFiles: %v", err)
+	}
 
-	envFiles := []EnvFile{{Path: p1}, {Path: p2}}
-	if err := RemoveEnvFiles(envFiles); err != nil {
+	if err := RemoveEnvFiles(envFiles, backupDir); err != nil {
 		t.Fatalf("RemoveEnvFiles: %v", err)
 	}
-	for _, p := range []string{p1, p2} {
+	// .env / .env.* は削除される。
+	for _, p := range []string{dotenv, dotenvVariant} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Fatalf("%s still exists: %v", p, err)
 		}
 	}
+	// 非 .env ファイルは削除対象外。
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("non-.env file must be preserved, stat: %v", err)
+	}
 
-	if err := RemoveEnvFiles(envFiles); err == nil {
+	// 二重削除はエラーになること。
+	if err := RemoveEnvFiles([]EnvFile{{Path: dotenv}}, backupDir); err == nil {
 		t.Fatal("second removal of already-deleted files must error")
+	}
+}
+
+func TestRemoveEnvFiles_RefusesWithoutBackup(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	backupDir := filepath.Join(root, "backup")
+
+	dotenv := filepath.Join(root, "sub", ".env")
+	writeTestFile(t, dotenv, "K=V\n")
+
+	// バックアップなしでの削除は拒否され、ファイルは残る。
+	if err := RemoveEnvFiles([]EnvFile{{Path: dotenv}}, backupDir); err == nil {
+		t.Fatal("RemoveEnvFiles without backup must error")
+	}
+	if _, err := os.Stat(dotenv); err != nil {
+		t.Fatalf(".env must be preserved when backup is missing, stat: %v", err)
 	}
 }
 
@@ -270,8 +302,48 @@ func TestImportToPass_RequiresPassBinary(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when pass binary is missing")
 	}
-	if !strings.Contains(err.Error(), "pass insert failed") {
-		t.Fatalf("error = %q, want it to mention pass insert failure", err)
+	if !errors.Is(err, ErrPassInsert) {
+		t.Fatalf("error = %v, want it to wrap ErrPassInsert", err)
+	}
+}
+
+// TestImportToPass_WithFakePassBinary runs the happy path against a fake
+// `pass` script on PATH so CI covers the main route without touching a real
+// store and without reading any real credential.
+func TestImportToPass_WithFakePassBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake pass script needs a POSIX shell")
+	}
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + logPath + "\ncat >> " + logPath + "\n"
+	passPath := filepath.Join(dir, "bin", "pass")
+	if err := os.MkdirAll(filepath.Dir(passPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(passPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Dir(passPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := ImportToPass([]EnvFile{{
+		Path: filepath.Join(dir, ".env"),
+		Entries: []EnvEntry{
+			{Key: "some_key", Value: "some value"},
+			{Key: "iria/api/xai", Value: "another-value"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("ImportToPass with fake pass: %v", err)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("fake pass produced no log: %v", err)
+	}
+	for _, want := range []string{"some_key", "some value", "iria/api/xai", "another-value"} {
+		if !strings.Contains(string(log), want) {
+			t.Fatalf("fake pass log = %q, want it to contain %q", log, want)
+		}
 	}
 }
 

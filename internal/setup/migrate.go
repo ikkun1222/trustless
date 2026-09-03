@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,10 @@ import (
 
 	"github.com/ikkun1222/trustless/internal/envscan"
 )
+
+// ErrPassInsert は `pass insert` 失敗のセンチネル。呼び出し側は errors.Is
+// で判定すること（文字列一致に依存しない）。
+var ErrPassInsert = errors.New("pass insert failed")
 
 type EnvFile struct {
 	Path    string
@@ -100,37 +105,48 @@ func ImportToPass(envFiles []EnvFile) error {
 			stdin.Close()
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				return fmt.Errorf("pass insert failed for %s: %w\n%s", entry.Key, err, string(out))
+				return fmt.Errorf("%w for %s: %v\n%s", ErrPassInsert, entry.Key, err, string(out))
 			}
 		}
 	}
 	return nil
 }
 
-func BackupEnvFiles(envFiles []EnvFile, backupDir string) error {
+// backupDst は env ファイルの backupDir 内の保存先を解決する。cwd 基準の
+// 相対レイアウトを保ち、backupDir 外への解決は拒否する（パストラバーサル
+// 防止）。BackupEnvFiles と RemoveEnvFiles で共有する。
+func backupDst(envPath, backupDir string) (src, dst string, err error) {
 	absBackup, err := filepath.Abs(backupDir)
 	if err != nil {
-		return fmt.Errorf("failed to resolve backup dir: %w", err)
+		return "", "", fmt.Errorf("failed to resolve backup dir: %w", err)
 	}
+	absPath, err := filepath.Abs(envPath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get working directory: %w", err)
+	}
+	relPath, err := filepath.Rel(cwd, absPath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get relative path: %w", err)
+	}
+	dst = filepath.Join(absBackup, relPath)
+	// relPath が ".." を含むと backupDir 外へ解決されるため拒否
+	// （パストラバーサル防止）。
+	if rel, rerr := filepath.Rel(absBackup, dst); rerr != nil ||
+		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("refusing to back up outside backup dir: %s", envPath)
+	}
+	return absPath, dst, nil
+}
+
+func BackupEnvFiles(envFiles []EnvFile, backupDir string) error {
 	for _, ef := range envFiles {
-		absPath, err := filepath.Abs(ef.Path)
+		absPath, dst, err := backupDst(ef.Path, backupDir)
 		if err != nil {
-			return fmt.Errorf("failed to get absolute path: %w", err)
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("failed to get working directory: %w", err)
-		}
-		relPath, err := filepath.Rel(cwd, absPath)
-		if err != nil {
-			return fmt.Errorf("failed to get relative path: %w", err)
-		}
-		dst := filepath.Join(absBackup, relPath)
-		// relPath が ".." を含むと backupDir 外へ解決されるため拒否
-		// （パストラバーサル防止）。
-		if rel, err := filepath.Rel(absBackup, dst); err != nil ||
-			rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("refusing to back up outside backup dir: %s", ef.Path)
+			return err
 		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", filepath.Dir(dst), err)
@@ -165,8 +181,28 @@ func copyFile(src, dst string) error {
 	return os.Chmod(dst, 0600)
 }
 
-func RemoveEnvFiles(envFiles []EnvFile) error {
+// isRemovableEnvFile は削除対象の拡張子ガード: base 名が ".env" または
+// ".env.*" のものだけを削除する（"a.env" 等は対象外）。
+func isRemovableEnvFile(path string) bool {
+	base := filepath.Base(path)
+	return base == ".env" || strings.HasPrefix(base, ".env.")
+}
+
+// RemoveEnvFiles deletes scanned .env files after verifying each one has a
+// backup under backupDir. Files failing the extension guard are skipped
+// (never deleted); a missing backup is a refusal error.
+func RemoveEnvFiles(envFiles []EnvFile, backupDir string) error {
 	for _, ef := range envFiles {
+		if !isRemovableEnvFile(ef.Path) {
+			continue
+		}
+		_, dst, err := backupDst(ef.Path, backupDir)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(dst); err != nil {
+			return fmt.Errorf("refusing to remove %s: no backup at %s", ef.Path, dst)
+		}
 		if err := os.Remove(ef.Path); err != nil {
 			return fmt.Errorf("failed to remove %s: %w", ef.Path, err)
 		}
