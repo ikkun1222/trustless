@@ -313,7 +313,7 @@ func runConfig(args []string, cfg *config.Config, cfgPath string) {
 		case "run_defaults.timeout":
 			currentCfg.RunDefaults.Timeout = value
 		case "proxy.port":
-			currentCfg.Proxy.Port, _ = strconv.Atoi(value)
+			currentCfg.Proxy.Port = validatedPort(value)
 		case "policy.default.denied_commands":
 			currentCfg.Policy.Default.DeniedCommands = strings.Split(value, ",")
 			for i, cmd := range currentCfg.Policy.Default.DeniedCommands {
@@ -466,8 +466,16 @@ func printCompletionUsage() {
 // a missing config key); validateConfigValue accepts exactly these names.
 var validBackends = []string{"pass", "env", "bitwarden"}
 
+// validOutputs is the enum for the `output` key. `json` is the default
+// (config.Default); `text` selects human-readable output. The field is
+// currently only surfaced by `config show` — no consumer branches on it yet —
+// but the enum keeps typos from silently landing in the file.
+var validOutputs = []string{"json", "text"}
+
 // validateConfigValue rejects values that would break behavior at run time if
 // written. Unknown config keys are rejected by runConfig itself.
+// policy./audit./sanitize. 系のキーは config set の対象外 (unknown key) で、
+// ファイル値は各コンシューマが実行時に解釈する（実行時検証なし）。
 func validateConfigValue(key, value string) error {
 	switch key {
 	case "backend":
@@ -477,6 +485,13 @@ func validateConfigValue(key, value string) error {
 			}
 		}
 		return fmt.Errorf("invalid backend %q (supported: %s)", value, strings.Join(validBackends, ", "))
+	case "output":
+		for _, o := range validOutputs {
+			if value == o {
+				return nil
+			}
+		}
+		return fmt.Errorf("invalid output %q (supported: %s)", value, strings.Join(validOutputs, ", "))
 	case "run_defaults.sanitize":
 		if value == "true" || value == "false" {
 			return nil
@@ -487,12 +502,33 @@ func validateConfigValue(key, value string) error {
 			return fmt.Errorf("invalid duration %q: %v", value, err)
 		}
 	case "proxy.port":
-		port, err := strconv.Atoi(value)
-		if err != nil || port < 1 || port > 65535 {
-			return fmt.Errorf("invalid port %q (expected 1-65535)", value)
+		if _, err := parsePort(value); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// parsePort validates a proxy.port string and returns the verified int.
+// runConfig reuses it via validatedPort so the value is parsed once.
+func parsePort(value string) (int, error) {
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("invalid port %q (expected 1-65535)", value)
+	}
+	return port, nil
+}
+
+// validatedPort converts an already-validated (validateConfigValue) port
+// string. A parse failure is unreachable; it exits fail-closed instead of
+// silently writing zero (no `strconv.Atoi` `_` ignore in runConfig).
+func validatedPort(value string) int {
+	port, err := parsePort(value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	return port
 }
 
 func printConfigUsage() {

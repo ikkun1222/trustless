@@ -47,7 +47,8 @@ func TestValidateConfigValue(t *testing.T) {
 		{"proxy.port", "1"},
 		{"proxy.port", "8080"},
 		{"proxy.port", "65535"},
-		{"output", "anything"}, // 実行時に参照されないキーは検証しない
+		{"output", "json"},
+		{"output", "text"},
 	}
 	for _, c := range valid {
 		if err := validateConfigValue(c.key, c.value); err != nil {
@@ -67,6 +68,9 @@ func TestValidateConfigValue(t *testing.T) {
 		{"proxy.port", "-1"},
 		{"proxy.port", "65536"},
 		{"proxy.port", "abc"},
+		{"output", "anything"},
+		{"output", "JSON"},
+		{"output", ""},
 	}
 	for _, c := range invalid {
 		if err := validateConfigValue(c.key, c.value); err == nil {
