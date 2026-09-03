@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -79,6 +80,60 @@ func TestCheckEnvFiles_WarningIsNotFixable(t *testing.T) {
 	}
 	if !strings.Contains(r.Message, "trustless setup") {
 		t.Fatalf("warning message = %q, want migration hint", r.Message)
+	}
+}
+
+func TestDedupeSearchDirs(t *testing.T) {
+	home := "/home/testuser"
+	got := dedupeSearchDirs([]string{home, home + "/projects"})
+	if len(got) != 1 || got[0] != home {
+		t.Fatalf("dedupeSearchDirs = %v, want [%s] (nested ~/projects dropped)", got, home)
+	}
+	got = dedupeSearchDirs([]string{home, home})
+	if len(got) != 1 {
+		t.Fatalf("dedupeSearchDirs exact dup = %v, want single entry", got)
+	}
+	got = dedupeSearchDirs([]string{"/a", "/b"})
+	if len(got) != 2 {
+		t.Fatalf("dedupeSearchDirs disjoint = %v, want both kept", got)
+	}
+}
+
+func TestScanEnvDir_CountsWalkErrors(t *testing.T) {
+	var found []string
+	// 存在しないルートはコールバックにエラーとして届き、カウントされる
+	// （全体は失敗せず継続する）。
+	n := scanEnvDir("/nonexistent-dir-for-doctor-test-xyz", []string{"API_KEY"}, &found)
+	if n == 0 {
+		t.Fatal("scanEnvDir on missing dir = 0 walk errors, want >= 1")
+	}
+	if len(found) != 0 {
+		t.Fatalf("found = %v, want empty", found)
+	}
+}
+
+func TestScanEnvDir_FindsSecretsAndSkipsExcluded(t *testing.T) {
+	root := t.TempDir()
+	writeFile := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(root+"/proj/.env", "API_KEY=dummy\n")
+	writeFile(root+"/.git/.env", "API_KEY=dummy\n") // 除外ディレクトリ
+	writeFile(root+"/plain/.env", "# nothing secret here\n")
+
+	var found []string
+	n := scanEnvDir(root, []string{"API_KEY"}, &found)
+	if n != 0 {
+		t.Fatalf("walk errors = %d, want 0", n)
+	}
+	if len(found) != 1 || found[0] != root+"/proj/.env" {
+		t.Fatalf("found = %v, want only proj/.env", found)
 	}
 }
 

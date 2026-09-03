@@ -257,39 +257,15 @@ func CheckEnvFiles() CheckResult {
 	}
 
 	patterns := []string{"API_KEY", "TOKEN", "SECRET", "PASSWORD"}
-	searchDirs := []string{home, filepath.Join(home, "projects")}
+	// home 走査が home/projects を既に含むため重複排除（二重走査防止）。
+	searchDirs := dedupeSearchDirs([]string{home, filepath.Join(home, "projects")})
 	var found []string
-
+	var walkErrs int
 	for _, dir := range searchDirs {
-		filepath.WalkDir(dir, func(path string, d os.DirEntry, _ error) error {
-			if d != nil && d.IsDir() {
-				base := d.Name()
-				if base == ".git" || base == ".config" || base == "node_modules" || base == ".cache" || base == ".password-store" || base == ".gnupg" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if d == nil || d.Name() != ".env" {
-				return nil
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-			for _, line := range strings.Split(string(data), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-				for _, p := range patterns {
-					if strings.Contains(line, p) {
-						found = append(found, path)
-						return nil
-					}
-				}
-			}
-			return nil
-		})
+		walkErrs += scanEnvDir(dir, patterns, &found)
+	}
+	if walkErrs > 0 {
+		fmt.Fprintf(os.Stderr, "doctor: .env scan skipped %d unreadable path(s)\n", walkErrs)
 	}
 
 	if len(found) > 0 {
@@ -307,6 +283,90 @@ func CheckEnvFiles() CheckResult {
 		Status:  StatusOK,
 		Message: "No .env files with plaintext credentials found",
 	}
+}
+
+// skippedEnvScanDirs は .env 走査から除外するディレクトリ名。巨大・機密系
+// ツリーの走査コストと誤検知を避ける。
+var skippedEnvScanDirs = map[string]struct{}{
+	".git": {}, ".config": {}, "node_modules": {},
+	".cache": {}, ".password-store": {}, ".gnupg": {},
+}
+
+// dedupeSearchDirs drops dirs nested under an earlier dir (e.g. ~/projects
+// under ~, or exact duplicates) so WalkDir never scans the same tree twice.
+func dedupeSearchDirs(dirs []string) []string {
+	var out []string
+	for _, d := range dirs {
+		nested := false
+		for _, kept := range out {
+			if isNestedPath(kept, d) {
+				nested = true
+				break
+			}
+		}
+		if !nested {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// isNestedPath reports whether child resolves inside parent (or equals it).
+func isNestedPath(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// scanEnvDir walks dir for ".env" files containing credential patterns,
+// appending matches to found. Unreadable paths are counted and skipped so a
+// single bad dir cannot fail the whole scan (the caller warns with the count).
+func scanEnvDir(dir string, patterns []string, found *[]string) (walkErrs int) {
+	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
+			if err != nil {
+				walkErrs++
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if _, skip := skippedEnvScanDirs[d.Name()]; skip {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != ".env" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			walkErrs++
+			return nil
+		}
+		if envDataHasSecrets(data, patterns) {
+			*found = append(*found, path)
+		}
+		return nil
+	})
+	return walkErrs
+}
+
+// envDataHasSecrets reports whether .env content has a credential-like line.
+func envDataHasSecrets(data []byte, patterns []string) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		for _, p := range patterns {
+			if strings.Contains(line, p) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func CheckAgentIntegration(name string, configPaths []string, fn AgentCheckFn) CheckResult {
