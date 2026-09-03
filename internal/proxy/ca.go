@@ -193,6 +193,13 @@ func savePEM(path string, mode os.FileMode, blockType string, der []byte) error 
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return pem.Encode(f, &pem.Block{Type: blockType, Bytes: der})
+	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: der}); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// OpenFile は既存ファイルのモードを変えないため、明示 Chmod で矯正する。
+	return os.Chmod(path, mode)
 }

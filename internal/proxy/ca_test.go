@@ -205,6 +205,24 @@ func TestLeafCert_RejectsEmptyHostname(t *testing.T) {
 	}
 }
 
+func TestSavePEM_CorrectsExistingKeyMode(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "k.key")
+	if err := os.WriteFile(keyPath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := savePEM(keyPath, 0o600, "PRIVATE KEY", []byte("dummy-der")); err != nil {
+		t.Fatalf("savePEM: %v", err)
+	}
+	fi, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("key mode = %04o, want 0600", perm)
+	}
+}
+
 func TestDefaultCAPaths_UsesTrustlessConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
