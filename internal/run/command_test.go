@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -81,6 +80,9 @@ func TestSanitizingWriterExactValueAcrossChunks(t *testing.T) {
 }
 
 func TestRunPassthroughForwardsStdin(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not in PATH (Windows/sh-less environment)")
+	}
 	tmp := t.TempDir()
 	script := tmp + "/stdin-echo.sh"
 	content := "#!/bin/bash\nIFS= read -r line\necho \"GOT:$line\"\n"
@@ -344,20 +346,23 @@ func TestBuildScanner_ErrorPaths(t *testing.T) {
 }
 
 func TestRunJSON_ReportsExitCodeAndSanitizesOutput(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not in PATH (Windows/sh-less environment)")
+	}
 	s := scanner.New()
 	values := []string{"sekrit-plain-value-123456"}
 	cmd := exec.Command("sh", "-c",
 		`echo "leak sk-abcdefghijklmnopqrstuvwxyz"; echo "exact sekrit-plain-value-123456" >&2; exit 3`)
 
-	out := captureStdout(t, func() {
-		if err := runJSON(cmd, true, s, values); err != nil {
-			t.Errorf("runJSON = %v, want nil", err)
-		}
-	})
+	// runJSON writes to the injected writer — no os.Stdout swapping.
+	var out bytes.Buffer
+	if err := runJSON(cmd, true, s, values, &out); err != nil {
+		t.Fatalf("runJSON = %v, want nil", err)
+	}
 
 	var res runResult
-	if err := json.Unmarshal([]byte(out), &res); err != nil {
-		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
 	}
 	if res.ExitCode != 3 {
 		t.Fatalf("exit_code = %d, want 3", res.ExitCode)
@@ -378,25 +383,17 @@ func TestRunJSON_ReportsExitCodeAndSanitizesOutput(t *testing.T) {
 
 func TestRunJSON_StartFailureReturnsError(t *testing.T) {
 	cmd := exec.Command("trustless-nonexistent-binary-xyz")
-	if err := runJSON(cmd, false, nil, nil); err == nil {
+	var out bytes.Buffer
+	if err := runJSON(cmd, false, nil, nil, &out); err == nil {
 		t.Fatal("runJSON with missing binary = nil, want error (no os.Exit)")
 	}
 }
 
-// captureStdout runs fn while os.Stdout is redirected to a pipe and returns
-// everything written to it.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
+func TestRunJSON_WritesNothingOnStartFailure(t *testing.T) {
+	cmd := exec.Command("trustless-nonexistent-binary-xyz")
+	var out bytes.Buffer
+	_ = runJSON(cmd, false, nil, nil, &out)
+	if out.Len() != 0 {
+		t.Fatalf("runJSON wrote %q before start failure, want no output", out.String())
 	}
-	old := os.Stdout
-	os.Stdout = w
-	defer func() { os.Stdout = old }()
-	fn()
-	w.Close()
-	out, _ := io.ReadAll(r)
-	r.Close()
-	return string(out)
 }

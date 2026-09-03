@@ -149,7 +149,7 @@ func Run(args []string, be backend.Backend, cfg *config.Config) {
 	})
 
 	if *jsonOutput {
-		if err := runJSON(cmd, sanitize, s, credValues); err != nil {
+		if err := runJSON(cmd, sanitize, s, credValues, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -344,7 +344,9 @@ func runPassthrough(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValue
 	}
 }
 
-func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []string) error {
+// runJSON runs cmd, sanitizes its output, and encodes the result as JSON to
+// stdout (injected as io.Writer so tests never swap os.Stdout).
+func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []string, stdout io.Writer) error {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("stdout pipe: %w", err)
@@ -358,12 +360,12 @@ func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []str
 		return fmt.Errorf("start command: %w", err)
 	}
 
-	stdout, _ := io.ReadAll(stdoutPipe)
-	stderr, _ := io.ReadAll(stderrPipe)
+	rawOut, _ := io.ReadAll(stdoutPipe)
+	rawErr, _ := io.ReadAll(stderrPipe)
 
 	if sanitize {
-		stdout = s.ScanWithValues(stdout, extraValues)
-		stderr = s.ScanWithValues(stderr, extraValues)
+		rawOut = s.ScanWithValues(rawOut, extraValues)
+		rawErr = s.ScanWithValues(rawErr, extraValues)
 	}
 
 	exitCode := 0
@@ -378,11 +380,11 @@ func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []str
 
 	res := runResult{
 		ExitCode: exitCode,
-		Stdout:   string(stdout),
-		Stderr:   string(stderr),
+		Stdout:   string(rawOut),
+		Stderr:   string(rawErr),
 	}
 
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(stdout)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(res); err != nil {
 		return fmt.Errorf("encode result: %w", err)
