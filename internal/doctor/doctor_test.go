@@ -162,6 +162,29 @@ func TestCheckBitwardenSessionNoFile(t *testing.T) {
 	}
 }
 
+func TestStatusDisplay_DistinguishesWarningFromError(t *testing.T) {
+	wCh, wCol := statusDisplay(StatusWarning)
+	eCh, eCol := statusDisplay(StatusError)
+	// Glyph は TTY 有無によらず異なること。
+	if wCh == eCh {
+		t.Fatalf("warning glyph %q must differ from error glyph %q", wCh, eCh)
+	}
+	// 色は TTY 時のみ有効（go test では空）。有効な場合は Warning=黄色系・
+	// Error=赤で、互いに異なること。
+	if yellow != "" && wCol != yellow {
+		t.Fatalf("warning color = %q, want yellow %q", wCol, yellow)
+	}
+	if red != "" && eCol != red {
+		t.Fatalf("error color = %q, want red %q", eCol, red)
+	}
+	if yellow != "" && red != "" && wCol == eCol {
+		t.Fatalf("warning color %q must differ from error color %q", wCol, eCol)
+	}
+	if ch, _ := statusDisplay(StatusOK); ch == wCh {
+		t.Fatalf("warning glyph %q must differ from OK glyph", wCh)
+	}
+}
+
 func TestExitCode(t *testing.T) {
 	// StatusError が1つでもあれば gate は失敗(1)。警告・情報のみなら成功(0)。
 	tests := []struct {

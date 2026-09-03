@@ -213,7 +213,7 @@ func statusDisplay(s CheckStatus) (string, string) {
 	case StatusOK:
 		return "\u2713", green
 	case StatusWarning:
-		return "\u2717", red
+		return "!", yellow
 	case StatusError:
 		return "\u2717", red
 	case StatusInfo:
