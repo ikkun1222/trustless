@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/ikkun1222/trustless/internal/config"
@@ -34,6 +35,12 @@ type reportGroup struct {
 }
 
 func Run(args []string) int {
+	return runE(args, os.Stdout, os.Stderr)
+}
+
+// runE is the writer-injected core of Run so integration tests capture
+// output without swapping os.Stdout/os.Stderr globals.
+func runE(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	fix := fs.Bool("fix", false, "Attempt to fix detected issues")
 	jsonOut := fs.Bool("json", false, "Output as JSON")
@@ -119,17 +126,17 @@ func Run(args []string) int {
 
 	// --fix は出力形式より先に適用する: --json --fix でも修正が有効になる。
 	if *fix {
-		applyFixes(all)
+		applyFixes(all, stderr)
 	}
 
 	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
+		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(all)
 		return exitCode(all)
 	}
 
-	printReport(groups, all, *fix)
+	printReport(groups, all, *fix, stdout)
 	return exitCode(all)
 }
 
@@ -149,7 +156,7 @@ func exitCode(all []CheckResult) int {
 // results are never touched. Checks without a Fix (e.g. agent integrations,
 // .env scan) are skipped and counted so --fix never claims to change
 // something it cannot. Totals go to stderr.
-func applyFixes(all []CheckResult) {
+func applyFixes(all []CheckResult, stderr io.Writer) {
 	var applied, skipped int
 	for _, c := range all {
 		if c.Status != StatusError && c.Status != StatusWarning {
@@ -160,23 +167,23 @@ func applyFixes(all []CheckResult) {
 			continue
 		}
 		if err := c.Fix(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error fixing %s: %v\n", c.Name, err)
+			fmt.Fprintf(stderr, "Error fixing %s: %v\n", c.Name, err)
 		}
 		applied++
 	}
-	fmt.Fprintf(os.Stderr, "doctor --fix: applied %d fix(es), skipped %d without automatic fix\n", applied, skipped)
+	fmt.Fprintf(stderr, "doctor --fix: applied %d fix(es), skipped %d without automatic fix\n", applied, skipped)
 }
 
-func printReport(groups []reportGroup, all []CheckResult, fix bool) {
-	fmt.Printf("%strustless doctor%s \u2014 system health check\n\n", cyan, reset)
+func printReport(groups []reportGroup, all []CheckResult, fix bool, stdout io.Writer) {
+	fmt.Fprintf(stdout, "%strustless doctor%s \u2014 system health check\n\n", cyan, reset)
 
 	for _, g := range groups {
-		fmt.Printf("%s%s%s\n", cyan, g.Name, reset)
+		fmt.Fprintf(stdout, "%s%s%s\n", cyan, g.Name, reset)
 		for _, c := range g.Checks {
 			ch, col := statusDisplay(c.Status)
-			fmt.Printf("  %s%s%s %s\n", col, ch, reset, c.Message)
+			fmt.Fprintf(stdout, "  %s%s%s %s\n", col, ch, reset, c.Message)
 		}
-		fmt.Println()
+		fmt.Fprintln(stdout)
 	}
 
 	var errCount, warnCount int
@@ -190,14 +197,14 @@ func printReport(groups []reportGroup, all []CheckResult, fix bool) {
 	}
 
 	if errCount > 0 || warnCount > 0 {
-		fmt.Printf("Summary: %d error(s), %d warning(s).", errCount, warnCount)
+		fmt.Fprintf(stdout, "Summary: %d error(s), %d warning(s).", errCount, warnCount)
 		if !fix {
-			fmt.Print(" Run with --fix to auto-resolve.\n")
+			fmt.Fprint(stdout, " Run with --fix to auto-resolve.\n")
 		} else {
-			fmt.Print("\n")
+			fmt.Fprint(stdout, "\n")
 		}
 	} else {
-		fmt.Printf("Summary: All checks passed.\n")
+		fmt.Fprintf(stdout, "Summary: All checks passed.\n")
 	}
 }
 

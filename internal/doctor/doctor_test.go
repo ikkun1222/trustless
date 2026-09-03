@@ -23,7 +23,7 @@ func TestApplyFixes_RunsFixesAndToleratesErrors(t *testing.T) {
 		}},
 	}
 	// Fix の失敗は全体を落とさず stderr 報告のみ（panic/exit しないこと）。
-	applyFixes(checks)
+	applyFixes(checks, io.Discard)
 	if len(ran) != 2 || ran[0] != "fixed" || ran[1] != "broken-fix" {
 		t.Fatalf("applyFixes ran %v, want [fixed broken-fix] in order", ran)
 	}
@@ -33,7 +33,7 @@ func TestApplyFixes_SkipsNilFix(t *testing.T) {
 	checks := []CheckResult{
 		{Name: "no-fix", Status: StatusError, Fixable: true, Fix: nil},
 	}
-	captureStderr(t, func() { applyFixes(checks) }) // panic しないこと
+	applyFixes(checks, io.Discard) // panic しないこと
 }
 
 func TestApplyFixes_OnlyErrorWarningAreFixed(t *testing.T) {
@@ -50,7 +50,9 @@ func TestApplyFixes_OnlyErrorWarningAreFixed(t *testing.T) {
 		{Name: "err", Status: StatusError, Fixable: true, Fix: mkFix("err")},
 		{Name: "warn-nofix", Status: StatusWarning, Fixable: true, Fix: nil},
 	}
-	stderr := captureStderr(t, func() { applyFixes(checks) })
+	var sb strings.Builder
+	applyFixes(checks, &sb)
+	stderr := sb.String()
 	if len(ran) != 1 || ran[0] != "err" {
 		t.Fatalf("applyFixes ran %v, want only [err]", ran)
 	}
@@ -135,24 +137,6 @@ func TestScanEnvDir_FindsSecretsAndSkipsExcluded(t *testing.T) {
 	if len(found) != 1 || found[0] != root+"/proj/.env" {
 		t.Fatalf("found = %v, want only proj/.env", found)
 	}
-}
-
-// captureStderr runs fn while os.Stderr is redirected to a pipe and returns
-// everything written to it.
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := os.Stderr
-	os.Stderr = w
-	defer func() { os.Stderr = old }()
-	fn()
-	w.Close()
-	out, _ := io.ReadAll(r)
-	r.Close()
-	return string(out)
 }
 
 func TestCheckBitwardenCLI(t *testing.T) {
