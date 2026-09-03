@@ -192,16 +192,8 @@ func TestLeafCert_RejectsEmptyHostname(t *testing.T) {
 		t.Fatalf("GenerateCA: %v", err)
 	}
 
-	leaf, err := ca.LeafCert("")
-	if err != nil {
-		t.Fatalf("LeafCert with empty hostname should not error: %v", err)
-	}
-	leafCert, err := x509.ParseCertificate(leaf.Certificate[0])
-	if err != nil {
-		t.Fatalf("parse leaf: %v", err)
-	}
-	if got := leafCert.Subject.CommonName; got != "" {
-		t.Fatalf("CN = %q, want empty", got)
+	if _, err := ca.LeafCert(""); err == nil {
+		t.Fatal(`LeafCert("") = nil, want error for empty hostname`)
 	}
 }
 

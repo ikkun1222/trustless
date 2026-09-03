@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -154,6 +155,9 @@ func GenerateCA(cfg CAConfig) (*CA, error) {
 }
 
 func (ca *CA) LeafCert(hostname string) (tls.Certificate, error) {
+	if strings.TrimSpace(hostname) == "" {
+		return tls.Certificate{}, fmt.Errorf("leaf certificate requires a non-empty hostname")
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("generate leaf key: %w", err)
