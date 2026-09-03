@@ -151,6 +151,42 @@ func envVarName(key string) string {
 	return strings.ToUpper(last)
 }
 
+// resolveEnvNames computes the environment variable name for each secret
+// spec (KEY or KEY:ENVNAME). It fails closed on collision: duplicate names
+// within one invocation, or shadowing an existing process variable, would
+// silently overwrite — the wrong value under the wrong name — so both are
+// errors.
+func resolveEnvNames(secrets stringSlice, baseEnv []string) ([]string, error) {
+	existing := make(map[string]struct{}, len(baseEnv))
+	for _, kv := range baseEnv {
+		if name, _, ok := strings.Cut(kv, "="); ok {
+			existing[name] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(secrets))
+	seen := make(map[string]string, len(secrets))
+	for _, spec := range secrets {
+		var envName string
+		if colon := strings.Index(spec, ":"); colon >= 0 {
+			envName = spec[colon+1:]
+		} else {
+			envName = envVarName(spec)
+		}
+		if envName == "" {
+			return nil, fmt.Errorf("empty environment variable name for secret %q", spec)
+		}
+		if prev, dup := seen[envName]; dup {
+			return nil, fmt.Errorf("environment variable %q collides: %q and %q map to the same name", envName, prev, spec)
+		}
+		if _, exists := existing[envName]; exists {
+			return nil, fmt.Errorf("environment variable %q already exists; refusing to overwrite (secret %q)", envName, spec)
+		}
+		seen[envName] = spec
+		names = append(names, envName)
+	}
+	return names, nil
+}
+
 func extractSecretKeys(secrets stringSlice) []string {
 	var keys []string
 	for _, spec := range secrets {
@@ -178,22 +214,23 @@ func buildContext(timeoutStr string) (context.Context, context.CancelFunc) {
 
 func resolveSecrets(ctx context.Context, secrets stringSlice, be backend.Backend) ([]string, []string) {
 	env := os.Environ()
+	names, err := resolveEnvNames(secrets, env)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
+	}
 	var credValues []string
-	for _, spec := range secrets {
-		var secretKey, envName string
+	for i, spec := range secrets {
+		secretKey := spec
 		if colon := strings.Index(spec, ":"); colon >= 0 {
 			secretKey = spec[:colon]
-			envName = spec[colon+1:]
-		} else {
-			secretKey = spec
-			envName = envVarName(spec)
 		}
 		val, err := be.Resolve(ctx, secretKey)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(2)
 		}
-		env = append(env, envName+"="+val)
+		env = append(env, names[i]+"="+val)
 		credValues = append(credValues, val)
 	}
 	return env, credValues

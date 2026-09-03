@@ -205,6 +205,30 @@ func TestEnvVarName_DerivesSafeEnvName(t *testing.T) {
 	}
 }
 
+func TestResolveEnvNames_RejectsCollisions(t *testing.T) {
+	// 生成名同士の衝突: "a/b-foo" と "c/b_foo" はどちらも B_FOO になる。
+	if _, err := resolveEnvNames(stringSlice{"a/b-foo", "c/b_foo"}, nil); err == nil {
+		t.Error("resolveEnvNames accepted generated-name collision, want error")
+	}
+	// 明示エイリアスと生成名の衝突: "iria/api/xai" → XAI と "other:XAI"。
+	if _, err := resolveEnvNames(stringSlice{"iria/api/xai", "other:XAI"}, nil); err == nil {
+		t.Error("resolveEnvNames accepted alias collision with XAI, want error")
+	}
+	// 既存環境変数のシャドウイング: XAI が既に存在する場合。
+	if _, err := resolveEnvNames(stringSlice{"iria/api/xai"}, []string{"XAI=old", "PATH=/usr/bin"}); err == nil {
+		t.Error("resolveEnvNames shadowed existing XAI, want error")
+	}
+
+	// 衝突なしは通ること。
+	names, err := resolveEnvNames(stringSlice{"iria/api/xai", "stats:USE_STATS"}, []string{"PATH=/usr/bin"})
+	if err != nil {
+		t.Fatalf("resolveEnvNames = %v, want nil", err)
+	}
+	if len(names) != 2 || names[0] != "XAI" || names[1] != "USE_STATS" {
+		t.Fatalf("resolveEnvNames = %v, want [XAI USE_STATS]", names)
+	}
+}
+
 func TestExtractSecretKeys_StripsEnvNameAliases(t *testing.T) {
 	got := extractSecretKeys(stringSlice{"iria/api/xai", "other:MY_ENV"})
 	want := []string{"iria/api/xai", "other"}
