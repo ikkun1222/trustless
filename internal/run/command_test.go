@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -108,6 +109,11 @@ func TestRunPassthroughForwardsStdin(t *testing.T) {
 	}
 }
 
+// mockBackend is the Resolve-driven fake for run injection-path tests
+// (resolveSecrets). It is NOT a DLP secret-list fake: unlike dlp's
+// fakeSecretsBackend (Values-driven), it is scripted by key→value map.
+// Values mirrors the same map (minLen-filtered, sorted) so reusing this
+// fake in a DLP-style path can never silently yield an empty secret set.
 type mockBackend struct {
 	values map[string]string
 }
@@ -120,7 +126,16 @@ func (m *mockBackend) Resolve(_ context.Context, key string) (string, error) {
 }
 func (m *mockBackend) List(context.Context) ([]backend.Entry, error) { return nil, nil }
 func (m *mockBackend) Set(context.Context, string, string) error     { return nil }
-func (m *mockBackend) Values(context.Context, int) ([]string, error) { return nil, nil }
+func (m *mockBackend) Values(_ context.Context, minLen int) ([]string, error) {
+	var out []string
+	for _, v := range m.values {
+		if len(v) >= minLen {
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
 
 func TestCheckPolicy_OverrideDeniesOnlyMatchingKeyAndCommand(t *testing.T) {
 	cfg := &config.Config{}
@@ -276,6 +291,22 @@ func TestResolveSecrets_AppendsEnvAndTracksValues(t *testing.T) {
 		if len(cred) != 1 || cred[0] != tc.wantCred {
 			t.Errorf("credValues = %v, want [%q]", cred, tc.wantCred)
 		}
+	}
+}
+
+// TestMockBackend_ValuesMirrorsResolveMap pins the fake contract: Values
+// reflects the same scripted map Resolve serves (no silent nil,nil).
+func TestMockBackend_ValuesMirrorsResolveMap(t *testing.T) {
+	be := &mockBackend{values: map[string]string{
+		"iria/api/xai": "sk-xai-secret-value",
+		"tiny":         "short",
+	}}
+	got, err := be.Values(context.Background(), 8)
+	if err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	if len(got) != 1 || got[0] != "sk-xai-secret-value" {
+		t.Fatalf("Values = %v, want [sk-xai-secret-value] (minLen-filtered)", got)
 	}
 }
 

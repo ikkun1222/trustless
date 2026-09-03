@@ -25,8 +25,11 @@ import (
 	"github.com/ikkun1222/trustless/internal/dlp/proxy"
 )
 
-// fakeSecretsBackend is a minimal in-memory backend whose Values results are
-// scripted by the test.
+// fakeSecretsBackend is the Values-driven fake for DLP secret-list tests
+// (LoadSecretsFromBackend). It is scripted by vals/err — the counterpart of
+// run/proxy's mockBackend, which is Resolve-driven (scripted by key→value
+// map) for injection paths. Keep the two apart: a Resolve-driven fake must
+// never stand in for a DLP secret source.
 type fakeSecretsBackend struct {
 	vals []string
 	err  error
