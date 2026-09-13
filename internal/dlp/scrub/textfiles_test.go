@@ -42,6 +42,11 @@ func TestScrubTextFiles_FileAndDir(t *testing.T) {
 	if _, ok := rep.Hits[f1]; !ok {
 		t.Fatalf("f1 missing from hits: %v", rep.Hits)
 	}
+	// The scan must report how many files it covered: a clean run and a no-op
+	// walk both printed "0 hits in 0 files" before.
+	if rep.Files != 2 {
+		t.Fatalf("scan files = %d, want 2 (note.md + sub/clean.txt; data.bin is filtered out)", rep.Files)
+	}
 
 	// Scrub: f1 gets masked, f2/f3 untouched.
 	srep, err := ScrubTextFiles(dir, []string{secret}, 8, nil, true)
@@ -61,6 +66,29 @@ func TestScrubTextFiles_FileAndDir(t *testing.T) {
 	data3, _ := os.ReadFile(f3)
 	if !strings.Contains(string(data3), secret) {
 		t.Fatalf("binary file was modified: %q", data3)
+	}
+	if srep.Files != 2 {
+		t.Fatalf("scrub files = %d, want 2", srep.Files)
+	}
+}
+
+// TestScanTextFiles_SingleFileCountsOne covers the file (not directory) branch
+// of the walk: the report must say one file was scanned, not zero.
+func TestScanTextFiles_SingleFileCountsOne(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(f, []byte("nothing to find here"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := ScanTextFiles(f, nil, 8, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Files != 1 {
+		t.Fatalf("scan files = %d, want 1", rep.Files)
+	}
+	if rep.TotalHits() != 0 {
+		t.Fatalf("hits = %d, want 0", rep.TotalHits())
 	}
 }
 

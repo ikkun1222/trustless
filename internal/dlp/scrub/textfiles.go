@@ -32,7 +32,7 @@ func NewTextReport() *TextReport {
 // otherwise pattern hits are counted per file too.
 func ScanTextFiles(root string, secrets []string, minLen int, patterns *redact.PatternSet) (*TextReport, error) {
 	rep := NewTextReport()
-	err := walkTextFiles(root, func(path string, data []byte) error {
+	n, err := walkTextFiles(root, func(path string, data []byte) error {
 		text := string(data)
 		if patterns == nil {
 			for _, s := range secrets {
@@ -52,6 +52,7 @@ func ScanTextFiles(root string, secrets []string, minLen int, patterns *redact.P
 	if err != nil {
 		return nil, err
 	}
+	rep.Files = n
 	return rep, nil
 }
 
@@ -63,7 +64,7 @@ func ScanTextFiles(root string, secrets []string, minLen int, patterns *redact.P
 // report of files scrubbed.
 func ScrubTextFiles(root string, secrets []string, minLen int, patterns *redact.PatternSet, maskPatterns bool) (*TextReport, error) {
 	rep := NewTextReport()
-	err := walkTextFiles(root, func(path string, data []byte) error {
+	n, err := walkTextFiles(root, func(path string, data []byte) error {
 		orig := string(data)
 		out := orig
 		if patterns == nil {
@@ -93,24 +94,32 @@ func ScrubTextFiles(root string, secrets []string, minLen int, patterns *redact.
 	if err != nil {
 		return nil, err
 	}
+	rep.Files = n
 	return rep, nil
 }
 
 // walkTextFiles walks root; if root is a file it processes just that file.
-// Only text-ish extensions are processed to avoid corrupting binaries.
-func walkTextFiles(root string, fn func(path string, data []byte) error) error {
+// Only text-ish extensions are processed to avoid corrupting binaries. It
+// returns how many files were handed to fn: callers report that count, so a
+// clean run ("0 hits in 512 files") can be told apart from a no-op walk
+// ("0 hits in 0 files") — the previous code never counted and always printed 0.
+func walkTextFiles(root string, fn func(path string, data []byte) error) (int, error) {
 	info, err := os.Stat(root)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !info.IsDir() {
 		data, err := os.ReadFile(root)
 		if err != nil {
-			return err
+			return 0, err
 		}
-		return fn(root, data)
+		if err := fn(root, data); err != nil {
+			return 0, err
+		}
+		return 1, nil
 	}
-	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	n := 0
+	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -124,8 +133,16 @@ func walkTextFiles(root string, fn func(path string, data []byte) error) error {
 		if err != nil {
 			return err
 		}
-		return fn(path, data)
+		if err := fn(path, data); err != nil {
+			return err
+		}
+		n++
+		return nil
 	})
+	if err != nil {
+		return n, err
+	}
+	return n, nil
 }
 
 // isTextFile reports whether a path looks like a text file worth scanning.
