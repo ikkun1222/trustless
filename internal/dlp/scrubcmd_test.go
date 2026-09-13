@@ -191,3 +191,21 @@ INSERT INTO messages (content) VALUES ('token xoxb-1234567890-1234567890 end');`
 		t.Fatalf("expected 0 hits with pattern disabled, got log: %q", buf2.String())
 	}
 }
+
+// TestRunScrubText_ReportsScannedFileCount guards the report wiring: the line
+// printed len(rep.Hits) as the file count, so a scan that covered files but
+// found nothing ("0 hits in 0 files") was indistinguishable from a walk that
+// visited nothing — which is how a silent no-op pre-backup scrub hides.
+func TestRunScrubText_ReportsScannedFileCount(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("nothing sensitive here\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	var buf strings.Builder
+	if err := runScrubTextWithSecrets(dir, nil, 8, false, nil, false, log.New(&buf, "", 0)); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, "in 0 of 1 files") {
+		t.Fatalf("report = %q, want it to name 1 scanned file", strings.TrimSpace(got))
+	}
+}

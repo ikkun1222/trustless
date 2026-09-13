@@ -70,6 +70,17 @@ func runScrubTextE(args []string, logger *log.Logger) error {
 	return runScrubTextWithSecrets(root, secrets, *minLen, *apply, patterns, maskPatterns, logger)
 }
 
+// oversizedNote appends the skipped-value count to a database report line.
+// Values above scrub's scan limit are skipped rather than failing the whole
+// run, so the line must say so: otherwise "0 hits" reads as "nothing to find"
+// when part of the column was never looked at.
+func oversizedNote(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("; %d value(s) skipped (over scan limit)", n)
+}
+
 // runScrubTextWithSecrets is the pure core of scrub-text: scans or scrubs
 // root with the given secrets. Used by runScrubTextE (real backend) and
 // tests (injected values). patterns == nil means known values only (legacy);
@@ -80,8 +91,8 @@ func runScrubTextWithSecrets(root string, secrets []string, minLen int, apply bo
 		if err != nil {
 			return fmt.Errorf("scrub: %w", err)
 		}
-		logger.Printf("SCRUBBED-TEXT %s: %d hits in %d files",
-			root, rep.TotalHits(), len(rep.Hits))
+		logger.Printf("SCRUBBED-TEXT %s: %d hits in %d of %d files",
+			root, rep.TotalHits(), len(rep.Hits), rep.Files)
 		for k, v := range rep.Hits {
 			logger.Printf("  %s: %d", k, v)
 		}
@@ -92,8 +103,8 @@ func runScrubTextWithSecrets(root string, secrets []string, minLen int, apply bo
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
-	logger.Printf("DRY-RUN-TEXT %s: %d hits in %d files (use --apply to scrub)",
-		root, rep.TotalHits(), len(rep.Hits))
+	logger.Printf("DRY-RUN-TEXT %s: %d hits in %d of %d files (use --apply to scrub)",
+		root, rep.TotalHits(), len(rep.Hits), rep.Files)
 	for k, v := range rep.Hits {
 		logger.Printf("  %s: %d", k, v)
 	}
@@ -113,8 +124,8 @@ func runScrubWithSecrets(dbPath string, secrets []string, minLen int, apply, bac
 			if err != nil {
 				return fmt.Errorf("scrub: %w", err)
 			}
-			logger.Printf("SCRUBBED %s: %d hits in %d columns; FTS rebuilt: %v",
-				dbPath, rep.TotalHits(), len(rep.Tables), rep.FTSRebuilt)
+			logger.Printf("SCRUBBED %s: %d hits in %d columns; FTS rebuilt: %v%s",
+				dbPath, rep.TotalHits(), len(rep.Tables), rep.FTSRebuilt, oversizedNote(rep.Oversized))
 			for k, v := range rep.Tables {
 				logger.Printf("  %s: %d", k, v)
 			}
@@ -124,8 +135,8 @@ func runScrubWithSecrets(dbPath string, secrets []string, minLen int, apply, bac
 		if err != nil {
 			return fmt.Errorf("scrub: %w", err)
 		}
-		logger.Printf("SCRUBBED %s: %d hits in %d columns; FTS rebuilt: %v",
-			dbPath, rep.TotalHits(), len(rep.Tables), rep.FTSRebuilt)
+		logger.Printf("SCRUBBED %s: %d hits in %d columns; FTS rebuilt: %v%s",
+			dbPath, rep.TotalHits(), len(rep.Tables), rep.FTSRebuilt, oversizedNote(rep.Oversized))
 		for k, v := range rep.Tables {
 			logger.Printf("  %s: %d", k, v)
 		}
@@ -137,8 +148,8 @@ func runScrubWithSecrets(dbPath string, secrets []string, minLen int, apply, bac
 		if err != nil {
 			return fmt.Errorf("scan: %w", err)
 		}
-		logger.Printf("DRY-RUN %s: %d hits in %d columns (use --apply to scrub)",
-			dbPath, rep.TotalHits(), len(rep.Tables))
+		logger.Printf("DRY-RUN %s: %d hits in %d columns (use --apply to scrub)%s",
+			dbPath, rep.TotalHits(), len(rep.Tables), oversizedNote(rep.Oversized))
 		for k, v := range rep.Tables {
 			logger.Printf("  %s: %d", k, v)
 		}
@@ -148,8 +159,8 @@ func runScrubWithSecrets(dbPath string, secrets []string, minLen int, apply, bac
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
-	logger.Printf("DRY-RUN %s: %d hits in %d columns (use --apply to scrub)",
-		dbPath, rep.TotalHits(), len(rep.Tables))
+	logger.Printf("DRY-RUN %s: %d hits in %d columns (use --apply to scrub)%s",
+		dbPath, rep.TotalHits(), len(rep.Tables), oversizedNote(rep.Oversized))
 	for k, v := range rep.Tables {
 		logger.Printf("  %s: %d", k, v)
 	}

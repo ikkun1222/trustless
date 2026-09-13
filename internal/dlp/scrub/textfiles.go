@@ -101,8 +101,8 @@ func ScrubTextFiles(root string, secrets []string, minLen int, patterns *redact.
 // walkTextFiles walks root; if root is a file it processes just that file.
 // Only text-ish extensions are processed to avoid corrupting binaries. It
 // returns how many files were handed to fn: callers report that count, so a
-// clean run ("0 hits in 512 files") can be told apart from a no-op walk
-// ("0 hits in 0 files") — the previous code never counted and always printed 0.
+// clean run ("0 hits in 0 of 512 files") can be told apart from a no-op walk
+// ("… in 0 of 0 files") — the previous code never counted and always printed 0.
 func walkTextFiles(root string, fn func(path string, data []byte) error) (int, error) {
 	info, err := os.Stat(root)
 	if err != nil {

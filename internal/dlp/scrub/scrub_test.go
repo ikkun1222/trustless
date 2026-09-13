@@ -624,3 +624,54 @@ func TestCopyFile_StreamsInsteadOfBuffering(t *testing.T) {
 		t.Fatal("backup content differs from source")
 	}
 }
+
+// TestScrubDBPatterns_SkipsOversizedValues guards the scan-size limit: a value
+// beyond maxScanValue must be skipped and counted, not abort the run. A 51 MiB
+// message.data row in opencode.db used to end a 13-minute scrub with
+// "bufio.Scanner: token too long", so every other table lost its scrub too.
+func TestScrubDBPatterns_SkipsOversizedValues(t *testing.T) {
+	old := maxScanValue
+	maxScanValue = 4096
+	t.Cleanup(func() { maxScanValue = old })
+
+	path := t.TempDir() + "/test.db"
+	const pattern = "api_key=abcdef1234567890abcdef"
+	small := "small row with " + pattern
+	huge := strings.Repeat("x", 5000) + " " + pattern
+
+	run := func(sql string) {
+		cmd := exec.Command("sqlite3", path)
+		cmd.Stdin = strings.NewReader(sql)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("sqlite3 %q: %v: %s", sql, err, out)
+		}
+	}
+	run(`CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);`)
+	run(`INSERT INTO notes (body) VALUES ('` + small + `');`)
+	run(`INSERT INTO notes (body) VALUES ('` + huge + `');`)
+
+	rep, err := ScrubDBPatterns(path, nil, 8, loadBundledPatterns(t), true, false)
+	if err != nil {
+		t.Fatalf("ScrubDBPatterns: %v", err)
+	}
+	if rep.Oversized != 1 {
+		t.Fatalf("oversized = %d, want 1 (only the 5 kB row is over the 4 kB limit)", rep.Oversized)
+	}
+	if n := rep.TableHits("notes", "body"); n != 1 {
+		t.Fatalf("notes.body hits = %d, want 1", n)
+	}
+	got, err := exec.Command("sqlite3", path, "SELECT body FROM notes ORDER BY id;").Output()
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(got)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("rows = %d, want 2: %q", len(lines), got)
+	}
+	if strings.Contains(lines[0], pattern) {
+		t.Fatalf("small row was not scrubbed: %q", lines[0])
+	}
+	if !strings.Contains(lines[1], pattern) {
+		t.Fatalf("oversized row must be left untouched (only counted), got %q", lines[1][:60])
+	}
+}

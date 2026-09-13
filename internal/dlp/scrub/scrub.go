@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ikkun1222/trustless/internal/dlp/redact"
@@ -33,6 +34,8 @@ type Report struct {
 	Tables map[string]int
 	// FTSRebuilt lists FTS5 virtual tables that were rebuilt.
 	FTSRebuilt []string
+	// Oversized counts values skipped because they exceed maxScanValue.
+	Oversized int
 }
 
 // NewReport returns an empty report.
@@ -102,9 +105,10 @@ func sqliteEachRow(path, sql string, fn func(line string) error) error {
 		return fmt.Errorf("sqlite3: %w", err)
 	}
 	sc := bufio.NewScanner(stdout)
-	// One row per line, hex-encoded: 64 MiB is far above any row we ship
-	// (the 64 KiB default would trip on a 32 KiB value).
-	sc.Buffer(make([]byte, 0, 1<<16), 1<<26)
+	// One row per line, hex-encoded, so the line is 2x the value: the buffer
+	// must clear 2x maxScanValue (opencode.db's largest message.data is 51 MiB
+	// = 102 MiB of hex). The 64 KiB default would trip on a 32 KiB value.
+	sc.Buffer(make([]byte, 0, 1<<16), 2*maxScanValue)
 	var fnErr error
 	for sc.Scan() {
 		if fnErr = fn(sc.Text()); fnErr != nil {
@@ -400,10 +404,11 @@ func ScanDBPatterns(path string, secrets []string, minLen int, patterns *redact.
 			return nil, err
 		}
 		for _, c := range cols {
-			n, err := scanColumnRows(path, t, c, secrets, minLen, patterns, maskPatterns, false)
+			n, oversized, err := scanColumnRows(path, t, c, secrets, minLen, patterns, maskPatterns, false)
 			if err != nil {
 				return nil, fmt.Errorf("%s.%s: %w", t, c, err)
 			}
+			rep.Oversized += oversized
 			if n > 0 {
 				rep.Tables[t+"."+c] = n
 			}
@@ -433,10 +438,11 @@ func ScrubDBPatterns(path string, secrets []string, minLen int, patterns *redact
 			return nil, err
 		}
 		for _, c := range cols {
-			n, err := scanColumnRows(path, t, c, secrets, minLen, patterns, maskPatterns, true)
+			n, oversized, err := scanColumnRows(path, t, c, secrets, minLen, patterns, maskPatterns, true)
 			if err != nil {
 				return nil, fmt.Errorf("%s.%s: %w", t, c, err)
 			}
+			rep.Oversized += oversized
 			if n > 0 {
 				rep.Tables[t+"."+c] = n
 			}
@@ -464,8 +470,29 @@ func ScrubDBPatterns(path string, secrets []string, minLen int, patterns *redact
 	return rep, nil
 }
 
+// maxScanValue caps how large a single value the row scanner pulls into Go.
+// hex() doubles the size, so the scanner buffer keeps room for 2x this. Values
+// above the limit are skipped and counted (see Report.Oversized) rather than
+// aborting the run: one 51 MiB message.data row in opencode.db ended a 13-minute
+// scrub with "bufio.Scanner: token too long". Lowered only by tests.
+var maxScanValue = 128 << 20
+
+// countRows returns a single COUNT(*) result.
+func countRows(path, sql string) (int, error) {
+	out, err := sqlite(path, sql)
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("count rows: %w", err)
+	}
+	return n, nil
+}
+
 // scanColumnRows streams every value of one text column and returns how many
-// rows hit. When write is true, changed values are written back with a single
+// rows hit plus how many were too large to scan. When write is true, changed
+// values are written back with a single
 // UPDATE per row. Row ids are hex-encoded so they never appear unescaped in
 // SQL; row values are matched in Go (redact.ScanAll).
 //
@@ -475,18 +502,26 @@ func ScrubDBPatterns(path string, secrets []string, minLen int, patterns *redact
 // ("argument list too long") on any value over 64 KiB, because the rewritten
 // value travels hex-encoded inside the statement and a single argv entry is
 // capped at 128 KiB.
-func scanColumnRows(path, table, col string, secrets []string, minLen int, patterns *redact.PatternSet, maskPatterns, write bool) (int, error) {
+func scanColumnRows(path, table, col string, secrets []string, minLen int, patterns *redact.PatternSet, maskPatterns, write bool) (int, int, error) {
 	var batch *updateBatch
 	if write {
 		b, err := newUpdateBatch()
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		batch = b
 		defer batch.Discard()
 	}
+	// Values above maxScanValue are counted and skipped: transferring one would
+	// need 2x its size as hex and can exceed the scanner buffer.
+	oversized, err := countRows(path, fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "%s" IS NOT NULL AND length("%s") > %d;`,
+		table, col, col, maxScanValue))
+	if err != nil {
+		return 0, 0, err
+	}
 	n := 0
-	err := sqliteEachRow(path, fmt.Sprintf("SELECT rowid, hex(\"%s\") FROM \"%s\";", col, table), func(line string) error {
+	err = sqliteEachRow(path, fmt.Sprintf(`SELECT rowid, hex("%s") FROM "%s" WHERE "%s" IS NOT NULL AND length("%s") <= %d;`,
+		col, table, col, col, maxScanValue), func(line string) error {
 		if line == "" {
 			return nil
 		}
@@ -510,14 +545,14 @@ func scanColumnRows(path, table, col string, secrets []string, minLen int, patte
 		return batch.Add(table, col, text, rid)
 	})
 	if err != nil {
-		return n, err
+		return n, oversized, err
 	}
 	if batch != nil {
 		if err := batch.Replay(path); err != nil {
-			return n, err
+			return n, oversized, err
 		}
 	}
-	return n, nil
+	return n, oversized, nil
 }
 
 // rewriteRow applies the configured layers to one value and returns the
