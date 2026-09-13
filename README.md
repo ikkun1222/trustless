@@ -288,7 +288,7 @@ trustless run -s GITHUB_TOKEN -s OPENAI_KEY -- gh pr list
 | `--sanitize` | Enable output scanning/redaction (default: on) |
 | `--sanitize-policy <file>` | Custom redaction patterns file |
 | `--scan-args` | Scan command arguments for credential patterns before spawning (default: on) |
-| `--json` | Output as JSON `{"exit_code": N, "stdout": "...", "stderr": "..."}` |
+| `--json` | Output as JSON `{"exit_code": N, "stdout": "...", "stderr": "...", "stdout_bytes": N, "stderr_bytes": N}` (captured output is capped at 64 MiB per stream; `stdout_truncated`/`stderr_truncated` flag the cap) |
 | `--timeout <duration>` | Subprocess timeout (default: 5m) |
 
 ### `trustless proxy` — HTTP Forward Proxy with Credential Injection

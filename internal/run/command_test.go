@@ -428,3 +428,77 @@ func TestRunJSON_WritesNothingOnStartFailure(t *testing.T) {
 		t.Fatalf("runJSON wrote %q before start failure, want no output", out.String())
 	}
 }
+
+// 上限超過時はバイト数のみ全量を報告し、本文は上限で切って truncated を立てる。
+func TestRunJSON_CapsHugeOutputAndReportsTotalBytes(t *testing.T) {
+	restore := maxCaptureBytes
+	maxCaptureBytes = 1024
+	t.Cleanup(func() { maxCaptureBytes = restore })
+
+	var out bytes.Buffer
+	cmd := exec.Command("sh", "-c",
+		"head -c 2048 < /dev/zero | tr '\\0' 'a'; head -c 2048 < /dev/zero | tr '\\0' 'b' 1>&2")
+	if err := runJSON(cmd, false, nil, nil, &out); err != nil {
+		t.Fatalf("runJSON: %v", err)
+	}
+
+	var res runResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if res.StdoutBytes != 2048 || res.StderrBytes != 2048 {
+		t.Fatalf("byte counts = (%d, %d), want (2048, 2048)", res.StdoutBytes, res.StderrBytes)
+	}
+	if len(res.Stdout) != 1024 || len(res.Stderr) != 1024 {
+		t.Fatalf("captured lengths = (%d, %d), want both capped at 1024", len(res.Stdout), len(res.Stderr))
+	}
+	if !res.StdoutTruncated || !res.StderrTruncated {
+		t.Fatalf("truncated flags = (%v, %v), want both true", res.StdoutTruncated, res.StderrTruncated)
+	}
+}
+
+// stdout/stderr を直列に読むと、子がもう一方のパイプを埋めて停止しデッドロックする。
+// 実装上は「読み捨て」で全量を消費するため、双方がパイプ容量を超えても完走できること。
+func TestRunJSON_DrainsStdoutAndStderrWithoutDeadlock(t *testing.T) {
+	restore := maxCaptureBytes
+	maxCaptureBytes = 4096
+	t.Cleanup(func() { maxCaptureBytes = restore })
+
+	const chunk = 300000
+	var out bytes.Buffer
+	cmd := exec.Command("sh", "-c",
+		"head -c 300000 < /dev/zero | tr '\\0' 'x'; head -c 300000 < /dev/zero | tr '\\0' 'y' 1>&2")
+	if err := runJSON(cmd, false, nil, nil, &out); err != nil {
+		t.Fatalf("runJSON: %v", err)
+	}
+
+	var res runResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if res.StdoutBytes != chunk || res.StderrBytes != chunk {
+		t.Fatalf("byte counts = (%d, %d), want (%d, %d)", res.StdoutBytes, res.StderrBytes, chunk, chunk)
+	}
+	if len(res.Stdout) != 4096 || len(res.Stderr) != 4096 {
+		t.Fatalf("captured lengths = (%d, %d), want both capped at 4096", len(res.Stdout), len(res.Stderr))
+	}
+}
+
+// 上限未満なら truncated は付かず、バイト数は実測値になる。
+func TestRunJSON_SmallOutputNotTruncated(t *testing.T) {
+	var out bytes.Buffer
+	cmd := exec.Command("sh", "-c", "printf 'hello\\n'")
+	if err := runJSON(cmd, false, nil, nil, &out); err != nil {
+		t.Fatalf("runJSON: %v", err)
+	}
+	if strings.Contains(out.String(), "truncated") {
+		t.Fatalf("unexpected truncated field for small output: %s", out.String())
+	}
+	var res runResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if res.Stdout != "hello\n" || res.StdoutBytes != 6 || res.StderrBytes != 0 {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+}

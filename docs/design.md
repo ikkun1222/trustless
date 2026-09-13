@@ -240,7 +240,7 @@ trustless run -s GITHUB_TOKEN -s OPENAI_KEY -- gh pr list
 | `-s, --secret <key>` | Credential key to inject (repeatable) |
 | `--sanitize` | Enable output scanning/redaction (default: on) |
 | `--sanitize-policy <file>` | Custom redaction patterns file |
-| `--json` | Output as JSON `{"exit_code": N, "stdout": "...", "stderr": "..."}` |
+| `--json` | Output as JSON `{"exit_code": N, "stdout": "...", "stderr": "...", "stdout_bytes": N, "stderr_bytes": N}` (capped at 64 MiB per stream) |
 | `--timeout <duration>` | Subprocess timeout (default: 5m) |
 
 ### `trustless proxy` — HTTP Forward Proxy with Credential Injection
@@ -416,7 +416,8 @@ Implements:
 - Flag parsing with `flag`: `-s` (repeatable string slice), `--json`, `--timeout` (duration string)
 - Subprocess execution: resolve credentials from backend → set on `Cmd.Env` → spawn → capture stdout/stderr
 - `-s` injects credential value as env var named by the last path segment (`iria/api/xai` → `XAI`)
-- `--json` outputs `{"exit_code": N, "stdout": "...", "stderr": "..."}`
+- `--json` outputs `{"exit_code": N, "stdout": "...", "stderr": "...", "stdout_bytes": N, "stderr_bytes": N}`
+- `--json` capture is capped at 64 MiB per stream: the overflow is drained and discarded (so a runaway child never blocks on a full pipe), `stdout_bytes`/`stderr_bytes` report the full byte count, and `stdout_truncated`/`stderr_truncated` flag the cap
 - `--timeout` sets context deadline
 - **No sanitization yet** — raw output returned
 - Default output: raw stdout/stderr to terminal, preserving subprocess behavior

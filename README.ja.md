@@ -273,7 +273,7 @@ trustless run -s GITHUB_TOKEN -s OPENAI_KEY -- gh pr list
 | `--sanitize` | 出力スキャン/Redact (デフォルト: on) |
 | `--sanitize-policy <file>` | カスタムRedactパターンファイル |
 | `--scan-args` | コマンド引数の認証情報スキャン (デフォルト: on) |
-| `--json` | JSON形式で出力: `{"exit_code": N, "stdout": "...", "stderr": "..."}` |
+| `--json` | JSON形式で出力: `{"exit_code": N, "stdout": "...", "stderr": "...", "stdout_bytes": N, "stderr_bytes": N}`（取り込みは 1 ストリーム 64 MiB で打ち切り、`stdout_truncated`/`stderr_truncated` が立ちます） |
 | `--timeout <duration>` | サブプロセスタイムアウト (デフォルト: 5m) |
 
 ### `trustless proxy` — HTTPフォワードプロキシ（認証情報置換）

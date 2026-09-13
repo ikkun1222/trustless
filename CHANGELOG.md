@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `dlp scrub-text`: report how many files were scanned (`N hits in M of K files`).
   The line printed the number of files *with hits*, so a clean directory and a
   walk that visited nothing both read as `0 hits in 0 files`.
+- `run --json`: bound the captured output at 64 MiB per stream and report it.
+  `io.ReadAll` on both pipes buffered whatever the child produced, so a runaway
+  command could OOM the agent, and reading stdout to EOF before touching stderr
+  deadlocked as soon as the child filled the stderr pipe. Both streams are now
+  drained concurrently, the overflow past the cap is discarded (a child must not
+  block on a full pipe), `stdout_bytes`/`stderr_bytes` report the true byte
+  counts and `stdout_truncated`/`stderr_truncated` flag the cap.
 
 ### Security
 

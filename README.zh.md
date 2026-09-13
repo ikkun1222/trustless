@@ -276,7 +276,7 @@ trustless run -s GITHUB_TOKEN -s OPENAI_KEY -- gh pr list
 | `--sanitize` | 启用输出扫描/脱敏（默认开启） |
 | `--sanitize-policy <file>` | 自定义脱敏模式文件 |
 | `--scan-args` | 启动前扫描命令参数中的凭据模式（默认开启） |
-| `--json` | 以 JSON 输出 `{"exit_code": N, "stdout": "...", "stderr": "..."}` |
+| `--json` | 以 JSON 输出 `{"exit_code": N, "stdout": "...", "stderr": "...", "stdout_bytes": N, "stderr_bytes": N}`（每个流最多捕获 64 MiB，超出时置位 `stdout_truncated`/`stderr_truncated`） |
 | `--timeout <duration>` | 子进程超时（默认：5m） |
 
 ### `trustless proxy` — 带凭据注入的 HTTP 转发代理

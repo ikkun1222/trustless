@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ikkun1222/trustless/internal/audit"
@@ -28,10 +29,48 @@ func (s *stringSlice) Set(v string) error {
 	return nil
 }
 
+// maxCaptureBytes は runJSON が子プロセスの出力をメモリへ取り込む上限。
+// 暴走した子（yes 等の無限出力・巨大ログ）で agent 側が OOM しないよう、
+// 超過分は読み捨ててカウントだけする（読み捨てないと子がパイプ詰まりで
+// 停止する）。上限に達したことは stdout_truncated / stderr_truncated で
+// 呼び出し側へ伝える（「空」と「多すぎ」を取り違えないため）。
+// テストから差し替えられるよう var。
+var maxCaptureBytes int64 = 64 << 20
+
 type runResult struct {
-	ExitCode int    `json:"exit_code"`
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
+	ExitCode        int    `json:"exit_code"`
+	Stdout          string `json:"stdout"`
+	Stderr          string `json:"stderr"`
+	StdoutBytes     int64  `json:"stdout_bytes"`
+	StderrBytes     int64  `json:"stderr_bytes"`
+	StdoutTruncated bool   `json:"stdout_truncated,omitempty"`
+	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
+}
+
+// captureLimited は r から最大 limit バイトをメモリへ読み、残りは読み捨てて
+// 合計バイト数を返す。戻り値は (取り込んだバイト列, 全バイト数, 切り詰め有無)。
+func captureLimited(r io.Reader, limit int64) ([]byte, int64, bool) {
+	var buf bytes.Buffer
+	n, _ := io.Copy(&buf, io.LimitReader(r, limit))
+	rest, _ := io.Copy(io.Discard, r)
+	return buf.Bytes(), n + rest, rest > 0
+}
+
+// captureBoth は stdout/stderr を並行して読む。直列に読むと、片方を読み切る
+// 間に子がもう片方のパイプ（64KiB）を埋めて停止し、デッドロックする。
+func captureBoth(stdout, stderr io.Reader, limit int64) (out, errOut []byte, outBytes, errBytes int64, outTrunc, errTrunc bool) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		out, outBytes, outTrunc = captureLimited(stdout, limit)
+	}()
+	go func() {
+		defer wg.Done()
+		errOut, errBytes, errTrunc = captureLimited(stderr, limit)
+	}()
+	wg.Wait()
+	return out, errOut, outBytes, errBytes, outTrunc, errTrunc
 }
 
 // CheckPolicy はコマンドの base 名を小文字化してから denied リストと照合
@@ -360,8 +399,7 @@ func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []str
 		return fmt.Errorf("start command: %w", err)
 	}
 
-	rawOut, _ := io.ReadAll(stdoutPipe)
-	rawErr, _ := io.ReadAll(stderrPipe)
+	rawOut, rawErr, outBytes, errBytes, outTrunc, errTrunc := captureBoth(stdoutPipe, stderrPipe, maxCaptureBytes)
 
 	if sanitize {
 		rawOut = s.ScanWithValues(rawOut, extraValues)
@@ -379,9 +417,13 @@ func runJSON(cmd *exec.Cmd, sanitize bool, s *scanner.Scanner, extraValues []str
 	}
 
 	res := runResult{
-		ExitCode: exitCode,
-		Stdout:   string(rawOut),
-		Stderr:   string(rawErr),
+		ExitCode:        exitCode,
+		Stdout:          string(rawOut),
+		Stderr:          string(rawErr),
+		StdoutBytes:     outBytes,
+		StderrBytes:     errBytes,
+		StdoutTruncated: outTrunc,
+		StderrTruncated: errTrunc,
 	}
 
 	enc := json.NewEncoder(stdout)
