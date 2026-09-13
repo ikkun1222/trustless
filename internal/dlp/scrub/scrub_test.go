@@ -675,3 +675,59 @@ func TestScrubDBPatterns_SkipsOversizedValues(t *testing.T) {
 		t.Fatalf("oversized row must be left untouched (only counted), got %q", lines[1][:60])
 	}
 }
+
+// sqliteQuery は sqlite3 CLI で 1 クエリを実行し、末尾改行を落として返す。
+func sqliteQuery(t *testing.T, path, q string) string {
+	t.Helper()
+	out, err := exec.Command("sqlite3", path, q).Output()
+	if err != nil {
+		t.Fatalf("sqlite3 %s: %v", q, err)
+	}
+	return strings.TrimRight(string(out), "\n")
+}
+
+// TestScrubDBPatterns_PreservesStorageClass は、パターン層の書き戻しが行の
+// 型を変えないことを検証する。書き戻しに使っていた X'..' リテラルは SQLite
+// では BLOB なので、TEXT 行が blob 化していた（state.db の
+// messages.content / system_prompts.prompt、bizmeshi.db の shops.details が
+// 実際に壊れた）。TEXT は TEXT のまま、BLOB は BLOB のまま書き戻すこと。
+func TestScrubDBPatterns_PreservesStorageClass(t *testing.T) {
+	path := newTestDB(t)
+	dummy := openaiDummy(t)
+	ddl := fmt.Sprintf(`CREATE TABLE keep(id INTEGER PRIMARY KEY, txt TEXT, bin BLOB);
+INSERT INTO keep VALUES(1, 'a %s b', CAST('a %s b' AS BLOB));`, dummy, dummy)
+	if out, err := exec.Command("sqlite3", path, ddl).CombinedOutput(); err != nil {
+		t.Fatalf("fixture: %v: %s", err, out)
+	}
+	if _, err := ScrubDBPatterns(path, nil, 8, loadBundledPatterns(t), true, false); err != nil {
+		t.Fatalf("ScrubDBPatterns: %v", err)
+	}
+	got := sqliteQuery(t, path,
+		`SELECT typeof(txt), txt, typeof(bin), CAST(bin AS TEXT) FROM keep WHERE id=1;`)
+	want := "text|a <redacted> b|blob|a <redacted> b"
+	if got != want {
+		t.Fatalf("storage class mangled:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestScrubDBPatterns_MixedColumnWithNumericFirstRow は、先頭行が数値の列に
+// ある TEXT の秘密も走査・マスクされることを検証する。旧 isTextColumn は
+// 先頭行の typeof だけで列ごと除外していたため、こうした行は素通りしていた。
+func TestScrubDBPatterns_MixedColumnWithNumericFirstRow(t *testing.T) {
+	path := newTestDB(t)
+	dummy := openaiDummy(t)
+	ddl := fmt.Sprintf(`CREATE TABLE mixed(id INTEGER PRIMARY KEY, v);
+INSERT INTO mixed VALUES(1, 7);
+INSERT INTO mixed VALUES(2, 'k %s');`, dummy)
+	if out, err := exec.Command("sqlite3", path, ddl).CombinedOutput(); err != nil {
+		t.Fatalf("fixture: %v: %s", err, out)
+	}
+	if _, err := ScrubDBPatterns(path, nil, 8, loadBundledPatterns(t), true, false); err != nil {
+		t.Fatalf("ScrubDBPatterns: %v", err)
+	}
+	got := sqliteQuery(t, path, `SELECT id, typeof(v), CAST(v AS TEXT) FROM mixed ORDER BY id;`)
+	want := "1|integer|7\n2|text|k <redacted>"
+	if got != want {
+		t.Fatalf("mixed column:\n got %q\nwant %q", got, want)
+	}
+}

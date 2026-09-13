@@ -210,13 +210,21 @@ func scanColumns(path, table string) ([]string, error) {
 	return out, nil
 }
 
-// isTextColumn reports whether col in table is a text-like column.
+// isTextColumn reports whether col in table can hold text (TEXT or BLOB
+// storage class in any row).
+//
+// 判定は「最初の行の typeof」ではなく「text/blob の行が 1 つでもあるか」で
+// 行う。列の型は行ごとに決まるので、先頭行が INTEGER の列に後から TEXT が
+// 入っている（SQLite では珍しくない）場合、旧実装は列ごと走査対象から外して
+// いた＝秘密の見落とし。EXISTS 相当の早期終了クエリなので、text が 1 つも
+// 無い列だけがフルスキャン 1 回のコストを払う。
 func isTextColumn(path, table, col string) bool {
-	out, err := sqlite(path, fmt.Sprintf("SELECT typeof(\"%s\") FROM \"%s\" LIMIT 1;", col, table))
+	out, err := sqlite(path, fmt.Sprintf(`SELECT typeof("%s") FROM "%s" WHERE "%s" IS NOT NULL AND typeof("%s") IN ('text','blob') LIMIT 1;`,
+		col, table, col, col))
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(out) == "text"
+	return strings.TrimSpace(out) != ""
 }
 
 // countHits counts rows in table.column containing any secret.
@@ -520,12 +528,16 @@ func scanColumnRows(path, table, col string, secrets []string, minLen int, patte
 		return 0, 0, err
 	}
 	n := 0
-	err = sqliteEachRow(path, fmt.Sprintf(`SELECT rowid, hex("%s") FROM "%s" WHERE "%s" IS NOT NULL AND length("%s") <= %d;`,
-		col, table, col, col, maxScanValue), func(line string) error {
+	err = sqliteEachRow(path, fmt.Sprintf(`SELECT rowid, typeof("%s"), hex("%s") FROM "%s" WHERE "%s" IS NOT NULL AND length("%s") <= %d;`,
+		col, col, table, col, col, maxScanValue), func(line string) error {
 		if line == "" {
 			return nil
 		}
-		rid, hexVal, ok := strings.Cut(line, "|")
+		rid, rest, ok := strings.Cut(line, "|")
+		if !ok {
+			return nil
+		}
+		kind, hexVal, ok := strings.Cut(rest, "|")
 		if !ok {
 			return nil
 		}
@@ -538,11 +550,16 @@ func scanColumnRows(path, table, col string, secrets []string, minLen int, patte
 		if !changed {
 			return nil
 		}
+		// 書き戻すのは TEXT/BLOB の行だけ。INTEGER/REAL の行を書き換えると
+		// 数値がテキストに化ける（SQLite の型は行ごとに決まるため）。
+		if kind != "text" && kind != "blob" {
+			return nil
+		}
 		n++
 		if batch == nil {
 			return nil
 		}
-		return batch.Add(table, col, text, rid)
+		return batch.Add(table, col, kind, text, rid)
 	})
 	if err != nil {
 		return n, oversized, err
@@ -592,9 +609,18 @@ func newUpdateBatch() (*updateBatch, error) {
 	return &updateBatch{f: f, name: f.Name()}, nil
 }
 
-// Add appends one rewritten row.
-func (b *updateBatch) Add(table, col, text, rid string) error {
-	if _, err := fmt.Fprintf(b.f, "UPDATE \"%s\" SET \"%s\" = %s WHERE rowid = %s;\n", table, col, secretHex(text), rid); err != nil {
+// Add appends one rewritten row. The SQL literal keeps the row's storage
+// class: a bare X'..' literal is a BLOB, so rewriting a TEXT row that way
+// changed its typeof and broke every reader expecting a string (state.db
+// messages.content / system_prompts.prompt, bizmeshi.db shops.details).
+// CAST(X'..' AS TEXT) still round-trips arbitrary bytes — hex needs no
+// escaping — and keeps TEXT as TEXT; a BLOB row keeps the bare literal.
+func (b *updateBatch) Add(table, col, kind, text, rid string) error {
+	lit := secretHex(text)
+	if kind == "text" {
+		lit = "CAST(" + lit + " AS TEXT)"
+	}
+	if _, err := fmt.Fprintf(b.f, "UPDATE \"%s\" SET \"%s\" = %s WHERE rowid = %s;\n", table, col, lit, rid); err != nil {
 		return fmt.Errorf("write updates: %w", err)
 	}
 	return nil

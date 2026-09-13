@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `dlp scrub-text`: report how many files were scanned (`N hits in M of K files`).
   The line printed the number of files *with hits*, so a clean directory and a
   walk that visited nothing both read as `0 hits in 0 files`.
+- `dlp scrub-db`: keep each row's storage class when rewriting it.
+  The row-rewrite path wrote `X'..'`, which is a BLOB literal, so every TEXT
+  row it touched came back as a blob (`typeof` changed) and broke readers that
+  expect text -- `state.db` `messages.content` / `sessions.model_config`,
+  `bizmeshi.db` `shops.details`. TEXT rows now use `CAST(X'..' AS TEXT)`;
+  rows that are not text/blob (INTEGER etc.) are left alone.
+- `dlp scrub-db`: decide "is this a text column" from the rows, not the first
+  row. A mixed column whose first row is numeric was skipped entirely, leaving
+  its text rows unscanned (silent miss).
 - `run --json`: bound the captured output at 64 MiB per stream and report it.
   `io.ReadAll` on both pipes buffered whatever the child produced, so a runaway
   command could OOM the agent, and reading stdout to EOF before touching stderr
