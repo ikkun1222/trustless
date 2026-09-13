@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -475,6 +476,7 @@ func TestScrubDBPatterns_ManyRows(t *testing.T) {
 		t.Fatalf("create test db: %v", err)
 	}
 
+	before := updateTempFiles(t)
 	rep, err := ScrubDBPatterns(path, nil, 8, loadBundledPatterns(t), true, false)
 	if err != nil {
 		t.Fatalf("ScrubDBPatterns: %v", err)
@@ -492,14 +494,133 @@ func TestScrubDBPatterns_ManyRows(t *testing.T) {
 		t.Fatalf("masked/leftover row counts = %q, want %d|0", got, rows)
 	}
 
-	// The rewrite temp file must not survive the run.
+	// The rewrite temp file must not survive this run. Compared against the
+	// set that existed beforehand: /tmp is shared, so a leftover from an
+	// unrelated (e.g. killed) run must not fail this test.
+	for name := range updateTempFiles(t) {
+		if !before[name] {
+			t.Fatalf("leaked update temp file: %s", name)
+		}
+	}
+}
+
+// TestScrubDBPatterns_SkipsSQLiteManagedTables guards the abort that left every
+// table sorting after sqlite_schema unscrubbed: SQLite refuses direct writes to
+// sqlite_schema ("may not be modified") and the -bail batch stopped there, so
+// tables later in the alphabet (system_prompts) were never scanned.
+func TestScrubDBPatterns_SkipsSQLiteManagedTables(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	const ddlKey = "api_key=abcdef1234567890abcdef"
+
+	// The DDL itself carries a pattern hit: the pattern layer matches the
+	// literal in the CHECK clause, but that text lives in sqlite_schema.sql,
+	// which SQLite will not let us rewrite.
+	seed := "CREATE TABLE ddl_meta (id INTEGER PRIMARY KEY, owner TEXT CHECK (owner <> '" + ddlKey + "'));\n" +
+		"CREATE TABLE zz_notes (id INTEGER PRIMARY KEY, body TEXT);\n" +
+		"INSERT INTO zz_notes (body) VALUES ('dump " + ddlKey + " now');\n"
+	cmd := exec.Command("sqlite3", path)
+	cmd.Stdin = strings.NewReader(seed)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("create test db: %v", err)
+	}
+
+	// Precondition: this fixture only covers the abort path if the pattern
+	// layer really matches the text sitting in sqlite_schema.sql.
+	ddl, err := exec.Command("sqlite3", path,
+		"SELECT sql FROM sqlite_schema WHERE name='ddl_meta';").Output()
+	if err != nil {
+		t.Fatalf("read ddl: %v", err)
+	}
+	patterns := loadBundledPatterns(t)
+	if _, changed := patterns.Scan(string(ddl)); !changed {
+		t.Fatalf("fixture does not exercise the DDL case (no pattern match in %q)", strings.TrimSpace(string(ddl)))
+	}
+
+	rep, err := ScrubDBPatterns(path, nil, 8, patterns, true, false)
+	if err != nil {
+		t.Fatalf("ScrubDBPatterns: %v", err)
+	}
+	if n := rep.TableHits("sqlite_schema", "sql"); n != 0 {
+		t.Fatalf("sqlite_schema.sql hits = %d, want 0 (SQLite-managed tables are excluded)", n)
+	}
+	if got := rep.TableHits("zz_notes", "body"); got != 1 {
+		t.Fatalf("zz_notes.body hits = %d, want 1 (a table sorting after sqlite_schema must still be scrubbed)", got)
+	}
+	out, err := exec.Command("sqlite3", path, "SELECT body FROM zz_notes;").Output()
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if strings.Contains(string(out), ddlKey) {
+		t.Fatalf("pattern hit survived the scrub: %q", strings.TrimSpace(string(out)))
+	}
+}
+
+// updateTempFiles returns the set of rewrite temp files currently in /tmp.
+func updateTempFiles(t *testing.T) map[string]bool {
+	t.Helper()
 	entries, err := os.ReadDir(os.TempDir())
 	if err != nil {
 		t.Fatalf("read temp dir: %v", err)
 	}
+	out := map[string]bool{}
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), "trustless-scrub-updates-") {
-			t.Fatalf("leaked update temp file: %s", e.Name())
+			out[e.Name()] = true
 		}
+	}
+	return out
+}
+
+// TestCopyFile_StreamsInsteadOfBuffering guards the --backup path. copyFile used
+// os.ReadFile, so every backup held the whole database in memory (opencode.db:
+// 1.9 GB RSS). The bound is checked against cumulative allocations, which no GC
+// can hide.
+func TestCopyFile_StreamsInsteadOfBuffering(t *testing.T) {
+	const size = 32 << 20
+	dir := t.TempDir()
+	src := dir + "/big.bin"
+	f, err := os.Create(src)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	chunk := make([]byte, 1<<20)
+	for i := range chunk {
+		chunk[i] = byte(i % 251)
+	}
+	for i := 0; i < size/(1<<20); i++ {
+		if _, err := f.Write(chunk); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if err := copyFile(src, src+".bak"); err != nil {
+		t.Fatalf("copyFile: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 8<<20 {
+		t.Fatalf("copyFile allocated %d bytes for a %d MiB input: it must stream, not buffer the whole file",
+			alloc, size>>20)
+	}
+
+	st, err := os.Stat(src + ".bak")
+	if err != nil || st.Size() != size {
+		t.Fatalf("backup stat = %v (err %v), want %d bytes", st, err, size)
+	}
+	want, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read src: %v", err)
+	}
+	got, err := os.ReadFile(src + ".bak")
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if !bytes.Equal(want, got) {
+		t.Fatal("backup content differs from source")
 	}
 }

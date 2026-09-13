@@ -136,8 +136,15 @@ func sqliteEachRow(path, sql string, fn func(line string) error) error {
 // PRAGMA table_list is used because shadow tables carry the sqlite_master
 // type='table' marker with a plain CREATE TABLE statement, so the old
 // 'NOT LIKE %VIRTUAL TABLE%' filter let them through.
+//
+// The SQLite-managed sqlite_* family (schema/sequence/stat) is excluded too:
+// SQLite refuses direct writes to it ("table sqlite_master may not be
+// modified"), and because the rewrite batch replays with -bail that error
+// aborted the whole run — every table after sqlite_schema (by name) stayed
+// unscrubbed. Its content is DDL/bookkeeping, which this tool cannot rewrite,
+// so it is out of scope by design instead of a hit that never clears.
 func listTables(path string) ([]string, error) {
-	out, err := sqlite(path, "SELECT name FROM pragma_table_list WHERE type='table' AND schema='main' ORDER BY name;")
+	out, err := sqlite(path, "SELECT name FROM pragma_table_list WHERE type='table' AND schema='main' AND name NOT LIKE 'sqlite_%' ORDER BY name;")
 	if err != nil {
 		return nil, err
 	}
@@ -345,13 +352,25 @@ func scrubColumn(path, table, col string, secrets []string, minLen int) (int, er
 	return n, nil
 }
 
-// copyFile copies src to dst (used for pre-scrub backup).
+// copyFile streams src to dst (used for the pre-scrub backup). The previous
+// os.ReadFile/os.WriteFile pair held the whole file in memory: --backup on
+// opencode.db (1.9 GB) pushed RSS above 2.4 GB on every daily run, an OOM risk
+// on the 11 GB host.
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o600)
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // scanFile stat-checks a path exists (helper for tests).
