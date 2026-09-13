@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `dlp scrub-db --backup`: copy with a fixed-size buffer instead of
   `os.ReadFile`/`os.WriteFile`. The backup loaded the entire database into memory
   (opencode.db: 1.9 GB) on every run.
+- `dlp scrub-db`: cap the size of a single scanned value (`maxScanValue`). A
+  51 MiB `message.data` row in opencode.db becomes 102 MiB of hex and ended a
+  13-minute scrub with `bufio.Scanner: token too long`, which also discarded the
+  scrub for every table after it. Larger values are now skipped without being
+  transferred and reported as `; N value(s) skipped (over scan limit)`.
+- `dlp scrub-text`: report how many files were scanned (`N hits in M of K files`).
+  The line printed the number of files *with hits*, so a clean directory and a
+  walk that visited nothing both read as `0 hits in 0 files`.
 
 ### Security
 
