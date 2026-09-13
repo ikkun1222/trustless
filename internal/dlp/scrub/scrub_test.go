@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -413,5 +414,92 @@ INSERT INTO t (n, content) VALUES (12345, 'oai %s end');
 	}
 	if rep.TableHits("t", "n") != 0 {
 		t.Fatalf("numeric column was scanned: %+v", rep.Tables)
+	}
+}
+
+// TestScrubDBPatterns_LargeRowValue guards the daily scrub-history failure
+// first seen 2026-09-12: a rewritten value is hex-encoded inside its UPDATE
+// statement, so a row over 64 KiB produced an argv entry over Linux's 128 KiB
+// MAX_ARG_STRLEN and the sqlite3 child died with E2BIG ("argument list too
+// long") — aborting the run before messages.content was scrubbed at all.
+func TestScrubDBPatterns_LargeRowValue(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/test.db"
+	dummy := openaiDummy(t)
+	val := strings.Repeat("a", 80*1024) + " token=" + dummy + " " + strings.Repeat("b", 80*1024)
+	wantLen := len(val) - len(dummy) + len(Marker)
+
+	// The seed statement is itself >128 KiB, so it goes in on stdin too.
+	cmd := exec.Command("sqlite3", path)
+	cmd.Stdin = strings.NewReader(fmt.Sprintf(
+		"CREATE TABLE big (id INTEGER PRIMARY KEY, content TEXT);\nINSERT INTO big (content) VALUES ('%s');\n", val))
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("create test db: %v", err)
+	}
+
+	rep, err := ScrubDBPatterns(path, nil, 8, loadBundledPatterns(t), true, false)
+	if err != nil {
+		t.Fatalf("ScrubDBPatterns with a 400 KiB row: %v", err)
+	}
+	if got := rep.TableHits("big", "content"); got != 1 {
+		t.Fatalf("big.content hits = %d, want 1 (%+v)", got, rep.Tables)
+	}
+	out, err := exec.Command("sqlite3", path, fmt.Sprintf(
+		"SELECT length(content), instr(content,'%s'), instr(content,'%s') FROM big;", Marker, dummy)).Output()
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(out)), "|")
+	if len(got) != 3 || got[0] != strconv.Itoa(wantLen) || got[1] == "0" || got[2] != "0" {
+		t.Fatalf("row not masked as expected: length/marker/leftover = %q (want %d/marker/none)", out, wantLen)
+	}
+}
+
+// TestScrubDBPatterns_ManyRows covers the batched rewrite replay: changed rows
+// are appended to a temp SQL file and replayed by one sqlite3 process on
+// stdin once the scan finishes, instead of one process per row.
+func TestScrubDBPatterns_ManyRows(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/test.db"
+	dummy := openaiDummy(t)
+	const rows = 500
+
+	var seed strings.Builder
+	seed.WriteString("CREATE TABLE many (id INTEGER PRIMARY KEY, content TEXT);\n")
+	for i := 0; i < rows; i++ {
+		fmt.Fprintf(&seed, "INSERT INTO many (content) VALUES ('row %d %s');\n", i, dummy)
+	}
+	cmd := exec.Command("sqlite3", path)
+	cmd.Stdin = strings.NewReader(seed.String())
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("create test db: %v", err)
+	}
+
+	rep, err := ScrubDBPatterns(path, nil, 8, loadBundledPatterns(t), true, false)
+	if err != nil {
+		t.Fatalf("ScrubDBPatterns: %v", err)
+	}
+	if got := rep.TableHits("many", "content"); got != rows {
+		t.Fatalf("many.content hits = %d, want %d", got, rows)
+	}
+	out, err := exec.Command("sqlite3", path, fmt.Sprintf(
+		"SELECT (SELECT COUNT(*) FROM many WHERE instr(content,'%s')>0), (SELECT COUNT(*) FROM many WHERE instr(content,'%s')>0);",
+		Marker, dummy)).Output()
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != fmt.Sprintf("%d|0", rows) {
+		t.Fatalf("masked/leftover row counts = %q, want %d|0", got, rows)
+	}
+
+	// The rewrite temp file must not survive the run.
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		t.Fatalf("read temp dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "trustless-scrub-updates-") {
+			t.Fatalf("leaked update temp file: %s", e.Name())
+		}
 	}
 }
