@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `dlp scrub-db` / `dlp scrub-text`: run SQLite statements from stdin instead of
+  argv. Linux caps a single argument at 128 KiB (`MAX_ARG_STRLEN`) and rewritten
+  values are hex-encoded (2x), so a single value larger than 64 KiB aborted the
+  whole scrub with `argument list too long` — no rows were rewritten and the
+  failure surfaced only as a generic error. Row scanning now streams one row at
+  a time instead of buffering a whole column (opencode.db peaked at 5.9 GB RSS),
+  and rewrites are replayed from a batched temp file through one process.
+
 ### Security
 
 - Update Go toolchain to 1.26.6 — fixes 5 standard-library vulnerabilities
