@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
+	"compress/zlib"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -646,5 +648,238 @@ func TestProxy_NilPatternsLegacy(t *testing.T) {
 	}
 	if evs := sink.events(); len(evs) != 0 {
 		t.Fatalf("expected no audit events, got %d: %+v", len(evs), evs)
+	}
+}
+
+// newEncodedSetup starts an upstream that decodes request bodies according to
+// coding before recording them, plus a DLP proxy in front of it. coding == ""
+// means the upstream expects a plain (identity) body.
+func newEncodedSetup(t *testing.T, secrets []string, coding string) (string, func() [][]byte) {
+	t.Helper()
+
+	var mu sync.Mutex
+	var received [][]byte
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body []byte
+		var err error
+		switch coding {
+		case "gzip", "x-gzip":
+			var zr *gzip.Reader
+			zr, err = gzip.NewReader(r.Body)
+			if err == nil {
+				body, err = io.ReadAll(zr)
+				_ = zr.Close()
+			}
+		case "deflate":
+			var zr io.ReadCloser
+			zr, err = zlib.NewReader(r.Body)
+			if err == nil {
+				body, err = io.ReadAll(zr)
+				_ = zr.Close()
+			}
+		default:
+			body, err = io.ReadAll(r.Body)
+		}
+		if err != nil {
+			t.Errorf("upstream decode (%s): %v", coding, err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, body)
+		mu.Unlock()
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxy := New(Options{
+		Secrets:      NewSecrets(secrets),
+		MinSecretLen: 8,
+		UpstreamURL:  upstream.URL,
+	})
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	return proxyServer.URL, func() [][]byte {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([][]byte, len(received))
+		copy(out, received)
+		return out
+	}
+}
+
+// encodeForTest compresses raw with the given Content-Encoding coding.
+func encodeForTest(t *testing.T, coding string, raw []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	switch coding {
+	case "gzip", "x-gzip":
+		zw := gzip.NewWriter(&buf)
+		if _, err := zw.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	case "deflate":
+		zw := zlib.NewWriter(&buf)
+		if _, err := zw.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	return raw
+}
+
+// TestProxy_DecodesCompressedBodyBeforeScanning is the regression for the
+// Content-Encoding bypass: a gzip/deflate body must be inflated, scanned, and
+// recompressed so the secret never reaches the upstream.
+func TestProxy_DecodesCompressedBodyBeforeScanning(t *testing.T) {
+	secret := "sk-compressed-secret-1234567890"
+	for _, coding := range []string{"gzip", "deflate"} {
+		t.Run(coding, func(t *testing.T) {
+			base, received := newEncodedSetup(t, []string{secret}, coding)
+			payload := []byte(`{"content":"my key is ` + secret + ` ok"}`)
+
+			req, err := http.NewRequest(http.MethodPost, base+"/v1/chat/completions",
+				bytes.NewReader(encodeForTest(t, coding, payload)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", coding)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+			}
+
+			bodies := received()
+			if len(bodies) != 1 {
+				t.Fatalf("upstream received %d requests, want 1", len(bodies))
+			}
+			got := string(bodies[0])
+			if strings.Contains(got, secret) {
+				t.Fatalf("secret reached upstream through %s: %s", coding, got)
+			}
+			if !strings.Contains(got, redact.Marker) {
+				t.Fatalf("expected <redacted> in %s body: %s", coding, got)
+			}
+		})
+	}
+}
+
+// TestProxy_IdentityEncodingStillScanned is the control: an explicit
+// Content-Encoding: identity body is scanned exactly like no header at all.
+func TestProxy_IdentityEncodingStillScanned(t *testing.T) {
+	secret := "sk-identity-secret-1234567890"
+	base, received := newEncodedSetup(t, []string{secret}, "")
+
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/chat/completions",
+		strings.NewReader(`{"content":"key `+secret+` here"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "identity")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	bodies := received()
+	if len(bodies) != 1 {
+		t.Fatalf("upstream received %d requests, want 1", len(bodies))
+	}
+	got := string(bodies[0])
+	if strings.Contains(got, secret) || !strings.Contains(got, redact.Marker) {
+		t.Fatalf("identity body not masked: %s", got)
+	}
+}
+
+// TestProxy_RejectsUnsupportedContentEncoding pins fail-closed behavior for
+// codings the scanner cannot decode (br, zstd, comma-separated stacks): 415
+// and zero requests to the upstream.
+func TestProxy_RejectsUnsupportedContentEncoding(t *testing.T) {
+	for _, coding := range []string{"br", "zstd", "gzip, br"} {
+		t.Run(coding, func(t *testing.T) {
+			base, received := newEncodedSetup(t, []string{"sk-unsupported-secret-1234"}, "")
+
+			req, err := http.NewRequest(http.MethodPost, base+"/v1/chat/completions",
+				strings.NewReader(`{"content":"whatever"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Encoding", coding)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusUnsupportedMediaType {
+				t.Fatalf("status = %d, want 415", resp.StatusCode)
+			}
+			if n := len(received()); n != 0 {
+				t.Fatalf("upstream received %d requests, want 0", n)
+			}
+		})
+	}
+}
+
+// TestProxy_RejectsOversizedDecodedBody is the compression-bomb guard: a
+// small gzip input that inflates past the 32 MiB cap is rejected with 413 and
+// never forwarded.
+func TestProxy_RejectsOversizedDecodedBody(t *testing.T) {
+	base, received := newEncodedSetup(t, nil, "gzip")
+
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	chunk := bytes.Repeat([]byte("A"), 1<<20)
+	for i := 0; i < (32<<20)/(1<<20)+1; i++ {
+		if _, err := zw.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	compressed := buf.Bytes()
+	if len(compressed) >= 1<<20 {
+		t.Fatalf("test payload should compress small, got %d bytes", len(compressed))
+	}
+
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Encoding", "gzip")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+	if n := len(received()); n != 0 {
+		t.Fatalf("upstream received %d requests, want 0", n)
 	}
 }
