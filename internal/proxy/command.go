@@ -83,15 +83,22 @@ func (p *Proxy) allowedHost(host string) bool {
 	return false
 }
 
-// injectByHost applies host-based credential injection rules. If the request
-// host matches a rule, the resolved credential is injected into the target
-// header or query parameter. Existing header values are never overwritten;
-// unresolved keys fail open (no injection).
+// injectByHost applies host-based credential injection rules using the
+// request's own Host. HTTP forwarding calls this; MITM must call
+// injectForHost with the CONNECT-bound host instead.
 func (p *Proxy) injectByHost(r *http.Request) {
 	host := hostOnly(r.Host)
 	if host == "" {
 		host = hostOnly(r.URL.Host)
 	}
+	p.injectForHost(r, host)
+}
+
+// injectForHost applies host-based credential injection rules for the given
+// host. If the host matches a rule, the resolved credential is injected into
+// the target header or query parameter. Existing header values are never
+// overwritten; unresolved keys fail open (no injection).
+func (p *Proxy) injectForHost(r *http.Request, host string) {
 	p.mu.RLock()
 	rule, ok := p.rules[host]
 	p.mu.RUnlock()
