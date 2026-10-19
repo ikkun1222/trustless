@@ -72,9 +72,16 @@ func (p *Proxy) mitmHandleCONNECT(w http.ResponseWriter, r *http.Request, ca *CA
 
 	p.injectForHost(req, boundHost)
 
-	upstreamTLS := &tls.Config{InsecureSkipVerify: true}
+	upstreamTLS := &tls.Config{
+		ServerName: boundHost,
+		RootCAs:    p.upstreamRoots,
+	}
 	upstream, err := tls.Dial("tcp", r.Host, upstreamTLS)
 	if err != nil {
+		// Verification failed (or the upstream is unreachable): report the
+		// failure without ever writing the request (and its injected
+		// credentials) to the peer.
+		tlsConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
 		return
 	}
 	defer upstream.Close()

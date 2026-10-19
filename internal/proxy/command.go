@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
@@ -28,6 +29,11 @@ type Proxy struct {
 	rules     map[string]config.ProxyRule
 	allowlist []string
 	ca        *CA
+
+	// upstreamRoots overrides the system trust store for MITM upstream TLS
+	// verification. It exists only so same-package tests can trust their
+	// self-signed sinks; production always leaves it nil (system roots).
+	upstreamRoots *x509.CertPool
 
 	muAddr   sync.RWMutex // guards listener (set by Start; read by Addr)
 	listener net.Listener
