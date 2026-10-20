@@ -314,20 +314,10 @@ func TestImportToPass_WithFakePassBinary(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake pass script needs a POSIX shell")
 	}
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "calls.log")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + logPath + "\ncat >> " + logPath + "\n"
-	passPath := filepath.Join(dir, "bin", "pass")
-	if err := os.MkdirAll(filepath.Dir(passPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(passPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", filepath.Dir(passPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	logPath := installFakePass(t)
 
 	err := ImportToPass([]EnvFile{{
-		Path: filepath.Join(dir, ".env"),
+		Path: filepath.Join(t.TempDir(), ".env"),
 		Entries: []EnvEntry{
 			{Key: "some_key", Value: "some value"},
 			{Key: "iria/api/xai", Value: "another-value"},
@@ -345,6 +335,24 @@ func TestImportToPass_WithFakePassBinary(t *testing.T) {
 			t.Fatalf("fake pass log = %q, want it to contain %q", log, want)
 		}
 	}
+}
+
+// installFakePass puts a fake `pass` on PATH that records its arguments and
+// stdin, and returns the log path.
+func installFakePass(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + logPath + "\ncat >> " + logPath + "\n"
+	passPath := filepath.Join(dir, "bin", "pass")
+	if err := os.MkdirAll(filepath.Dir(passPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(passPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Dir(passPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logPath
 }
 
 func TestImportToPass_RejectsUnsafeKeys(t *testing.T) {
@@ -392,4 +400,212 @@ func writeTestFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// assertNoFileUnder fails when any regular file below dir contains needle.
+// A missing dir means nothing was written, which is the desired outcome.
+func assertNoFileUnder(t *testing.T, dir, needle string) {
+	t.Helper()
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			t.Fatalf("read %s: %v", path, rerr)
+		}
+		if strings.Contains(string(data), needle) {
+			t.Fatalf("out-of-root content %q copied into %s", needle, path)
+		}
+		return nil
+	})
+}
+
+func TestScanEnvFiles_SkipsSymlinkedEnvOutsideRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require privileges on Windows")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	outside := filepath.Join(base, "outside")
+	writeTestFile(t, filepath.Join(outside, "operator-secrets"), "AWS_ACCESS_KEY_ID=AKIAOUTSIDE\n")
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// repo/app/.env -> repo/../outside/operator-secrets
+	if err := os.Symlink("../../outside/operator-secrets", filepath.Join(root, "app", ".env")); err != nil {
+		t.Fatal(err)
+	}
+
+	envFiles, err := ScanEnvFiles([]string{root})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(envFiles) != 0 {
+		t.Fatalf("ScanEnvFiles followed a symlink out of root: %+v", envFiles)
+	}
+}
+
+func TestScanEnvFiles_SkipsSymlinksButKeepsRegularFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require privileges on Windows")
+	}
+	root := t.TempDir()
+	regular := filepath.Join(root, "real", ".env")
+	writeTestFile(t, regular, "KEEP=1\n")
+	writeTestFile(t, filepath.Join(root, "target", "secrets"), "DROP=1\n")
+	if err := os.MkdirAll(filepath.Join(root, "linked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Even an in-root symlink is skipped: only regular files are scanned.
+	if err := os.Symlink("../target/secrets", filepath.Join(root, "linked", ".env")); err != nil {
+		t.Fatal(err)
+	}
+
+	envFiles, err := ScanEnvFiles([]string{root})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(envFiles) != 1 || envFiles[0].Path != regular {
+		t.Fatalf("envFiles = %+v, want only the regular %s", envFiles, regular)
+	}
+	for _, e := range envFiles[0].Entries {
+		if e.Key == "DROP" {
+			t.Fatalf("scanned symlink content: %+v", envFiles[0].Entries)
+		}
+	}
+}
+
+func TestScanEnvFiles_DoesNotTraverseDirectorySymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require privileges on Windows")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	outside := filepath.Join(base, "outside")
+	writeTestFile(t, filepath.Join(outside, ".env"), "AWS_ACCESS_KEY_ID=AKIAOUTSIDE\n")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// repo/d -> ../outside; the .env below it is lexically in-root.
+	if err := os.Symlink("../outside", filepath.Join(root, "d")); err != nil {
+		t.Fatal(err)
+	}
+
+	envFiles, err := ScanEnvFiles([]string{root})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(envFiles) != 0 {
+		t.Fatalf("ScanEnvFiles traversed a directory symlink: %+v", envFiles)
+	}
+}
+
+func TestBackupEnvFiles_SkipsSymlinkedEnvOutsideRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require privileges on Windows")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	outside := filepath.Join(base, "outside")
+	writeTestFile(t, filepath.Join(outside, "operator-secrets"), "AWS_ACCESS_KEY_ID=AKIAOUTSIDE\n")
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "app", ".env")
+	if err := os.Symlink("../../outside/operator-secrets", link); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	backupDir := filepath.Join(root, "backup")
+	if err := BackupEnvFiles([]EnvFile{{Path: link}}, backupDir); err != nil {
+		t.Fatalf("BackupEnvFiles: %v", err)
+	}
+	assertNoFileUnder(t, backupDir, "AWS_ACCESS_KEY_ID")
+}
+
+func TestBackupEnvFiles_SkipsPathThroughDirectorySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require privileges on Windows")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	outside := filepath.Join(base, "outside")
+	writeTestFile(t, filepath.Join(outside, ".env"), "AWS_ACCESS_KEY_ID=AKIAOUTSIDE\n")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Lexically root/d/.env, but repo/d resolves out of root.
+	if err := os.Symlink("../outside", filepath.Join(root, "d")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	backupDir := filepath.Join(root, "backup")
+	envPath := filepath.Join(root, "d", ".env")
+	if err := BackupEnvFiles([]EnvFile{{Path: envPath}}, backupDir); err != nil {
+		t.Fatalf("BackupEnvFiles: %v", err)
+	}
+	assertNoFileUnder(t, backupDir, "AWS_ACCESS_KEY_ID")
+}
+
+func TestEnvMigration_RegularDotenvStillImportedAndBackedUp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake pass script needs a POSIX shell")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	regular := filepath.Join(root, ".env")
+	writeTestFile(t, regular, "API_KEY=keep-me\n")
+	outside := filepath.Join(base, "outside")
+	writeTestFile(t, filepath.Join(outside, "operator-secrets"), "AWS_ACCESS_KEY_ID=AKIAOUTSIDE\n")
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../outside/operator-secrets", filepath.Join(root, "app", ".env")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	envFiles, err := ScanEnvFiles([]string{root})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(envFiles) != 1 || envFiles[0].Path != regular {
+		t.Fatalf("envFiles = %+v, want only the regular %s", envFiles, regular)
+	}
+
+	logPath := installFakePass(t)
+
+	if err := ImportToPass(envFiles); err != nil {
+		t.Fatalf("ImportToPass: %v", err)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("fake pass produced no log: %v", err)
+	}
+	if !strings.Contains(string(log), "keep-me") {
+		t.Fatalf("fake pass log = %q, want the regular .env value", log)
+	}
+	if strings.Contains(string(log), "AKIAOUTSIDE") {
+		t.Fatalf("fake pass log = %q, imported out-of-root content", log)
+	}
+
+	backupDir := filepath.Join(root, "backup")
+	if err := BackupEnvFiles(envFiles, backupDir); err != nil {
+		t.Fatalf("BackupEnvFiles: %v", err)
+	}
+	rel, err := filepath.Rel(root, regular)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(backupDir, rel))
+	if err != nil {
+		t.Fatalf("regular .env was not backed up: %v", err)
+	}
+	if string(got) != "API_KEY=keep-me\n" {
+		t.Fatalf("backup content = %q, want the regular .env content", got)
+	}
+	assertNoFileUnder(t, backupDir, "AKIAOUTSIDE")
 }

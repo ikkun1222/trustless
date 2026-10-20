@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/ikkun1222/trustless/internal/envscan"
 )
@@ -29,9 +30,14 @@ type EnvEntry = envscan.Entry
 func ScanEnvFiles(searchPaths []string) ([]EnvFile, error) {
 	var envFiles []EnvFile
 	seen := make(map[string]bool)
+	skipped := 0
 
 	for _, sp := range searchPaths {
 		absPath, err := filepath.Abs(sp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve path %s: %w", sp, err)
+		}
+		resolvedRoot, err := filepath.EvalSymlinks(absPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve path %s: %w", sp, err)
 		}
@@ -48,22 +54,21 @@ func ScanEnvFiles(searchPaths []string) ([]EnvFile, error) {
 				}
 				return nil
 			}
-			if !envscan.IsEnvFile(d.Name()) {
+			if !envscan.IsEnvFile(d.Name()) || seen[path] {
 				return nil
 			}
-			if seen[path] {
+			ef, ok, err := loadEnvFile(path, resolvedRoot, d)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				skipped++
 				return nil
 			}
 			seen[path] = true
 
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("failed to open %s: %w", path, err)
-			}
-			entries := envscan.ParseEntries(data)
-
-			if len(entries) > 0 {
-				envFiles = append(envFiles, EnvFile{Path: path, Entries: entries})
+			if len(ef.Entries) > 0 {
+				envFiles = append(envFiles, ef)
 			}
 			return nil
 		})
@@ -72,7 +77,99 @@ func ScanEnvFiles(searchPaths []string) ([]EnvFile, error) {
 		}
 	}
 
+	logSkipped("scan", skipped)
 	return envFiles, nil
+}
+
+// loadEnvFile reads one .env candidate only when it is a regular file whose
+// symlink-resolved path stays under resolvedRoot. Symlinks (even in-root
+// ones), other non-regular files, and unresolvable/escaping paths return
+// ok=false so the caller skips them instead of following the link. A real
+// read failure on an eligible file is still an error.
+func loadEnvFile(path, resolvedRoot string, d os.DirEntry) (EnvFile, bool, error) {
+	if !d.Type().IsRegular() {
+		return EnvFile{}, false, nil
+	}
+	resolved, ok := resolveWithinRoot(resolvedRoot, path)
+	if !ok {
+		return EnvFile{}, false, nil
+	}
+	data, err := readFileNoFollow(resolved)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return EnvFile{}, false, nil
+		}
+		return EnvFile{}, false, fmt.Errorf("failed to open %s: %w", path, err)
+	}
+	return EnvFile{Path: path, Entries: envscan.ParseEntries(data)}, true, nil
+}
+
+// resolveWithinRoot resolves target through symlinks and reports whether the
+// resolved path is still under root. root must already be symlink-resolved.
+// Callers skip unresolvable or escaping paths rather than following them.
+func resolveWithinRoot(root, target string) (string, bool) {
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return "", false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return resolved, true
+}
+
+// resolvedCwd returns the working directory with symlinks resolved. Backup and
+// removal use it as the containment root, matching backupDst's cwd-relative
+// layout.
+func resolvedCwd() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get working directory: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve working directory: %w", err)
+	}
+	return resolved, nil
+}
+
+// regularFileWithin reports whether path is a regular file (not a symlink)
+// whose resolved location stays under resolvedRoot. Non-regular and
+// escaping/unresolvable paths are reported as false; stat errors are returned
+// so missing inputs still fail loudly.
+func regularFileWithin(resolvedRoot, path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, nil
+	}
+	_, ok := resolveWithinRoot(resolvedRoot, path)
+	return ok, nil
+}
+
+// logSkipped reports how many .env candidates were deliberately not followed
+// (symlinks, other non-regular files, or paths resolving outside the root).
+// stderr keeps the setup command's stdout report unchanged.
+func logSkipped(stage string, n int) {
+	if n == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "trustless setup: %s: skipped %d non-regular or out-of-root .env path(s)\n", stage, n)
+}
+
+func readFileNoFollow(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
 }
 
 // passKeyPattern は `pass insert` に渡して安全なキー文字の許可リスト。
@@ -143,23 +240,43 @@ func backupDst(envPath, backupDir string) (src, dst string, err error) {
 }
 
 func BackupEnvFiles(envFiles []EnvFile, backupDir string) error {
+	resolvedRoot, err := resolvedCwd()
+	if err != nil {
+		return err
+	}
+	skipped := 0
+
 	for _, ef := range envFiles {
 		absPath, dst, err := backupDst(ef.Path, backupDir)
 		if err != nil {
 			return err
 		}
+		ok, err := regularFileWithin(resolvedRoot, absPath)
+		if err != nil {
+			return fmt.Errorf("failed to inspect %s: %w", absPath, err)
+		}
+		if !ok {
+			skipped++
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", filepath.Dir(dst), err)
 		}
 		if err := copyFile(absPath, dst); err != nil {
+			// A symlink swapped in after the check is skipped, not followed.
+			if errors.Is(err, syscall.ELOOP) {
+				skipped++
+				continue
+			}
 			return fmt.Errorf("failed to copy %s to %s: %w", absPath, dst, err)
 		}
 	}
+	logSkipped("backup", skipped)
 	return nil
 }
 
 func copyFile(src, dst string) error {
-	r, err := os.Open(src)
+	r, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}
@@ -192,20 +309,35 @@ func isRemovableEnvFile(path string) bool {
 // backup under backupDir. Files failing the extension guard are skipped
 // (never deleted); a missing backup is a refusal error.
 func RemoveEnvFiles(envFiles []EnvFile, backupDir string) error {
+	resolvedRoot, err := resolvedCwd()
+	if err != nil {
+		return err
+	}
+	skipped := 0
+
 	for _, ef := range envFiles {
 		if !isRemovableEnvFile(ef.Path) {
 			continue
 		}
-		_, dst, err := backupDst(ef.Path, backupDir)
+		absPath, dst, err := backupDst(ef.Path, backupDir)
 		if err != nil {
 			return err
+		}
+		ok, err := regularFileWithin(resolvedRoot, absPath)
+		if err != nil {
+			return fmt.Errorf("failed to inspect %s: %w", absPath, err)
+		}
+		if !ok {
+			skipped++
+			continue
 		}
 		if _, err := os.Stat(dst); err != nil {
 			return fmt.Errorf("refusing to remove %s: no backup at %s", ef.Path, dst)
 		}
-		if err := os.Remove(ef.Path); err != nil {
+		if err := os.Remove(absPath); err != nil {
 			return fmt.Errorf("failed to remove %s: %w", ef.Path, err)
 		}
 	}
+	logSkipped("remove", skipped)
 	return nil
 }
