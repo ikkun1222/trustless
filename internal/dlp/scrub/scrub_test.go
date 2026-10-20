@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -707,6 +708,90 @@ INSERT INTO keep VALUES(1, 'a %s b', CAST('a %s b' AS BLOB));`, dummy, dummy)
 	want := "text|a <redacted> b|blob|a <redacted> b"
 	if got != want {
 		t.Fatalf("storage class mangled:\n got %q\nwant %q", got, want)
+	}
+}
+
+// testQuoteIdent / testQuoteLiteral are independent fixture helpers: the
+// regression tests must be able to create malicious schema on the unfixed
+// code, so they cannot depend on the production quoting functions they guard.
+func testQuoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+func testQuoteLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// sqlCharExpr encodes an ASCII string as a SQLite char() expression, so a
+// payload can name an absolute path without embedding quote characters.
+func sqlCharExpr(s string) string {
+	parts := make([]string, 0, len(s))
+	for _, b := range []byte(s) {
+		parts = append(parts, strconv.Itoa(int(b)))
+	}
+	return "char(" + strings.Join(parts, ",") + ")"
+}
+
+// runSQLFile executes SQL against path through the sqlite3 CLI on stdin.
+func runSQLFile(t *testing.T, path, sql string) {
+	t.Helper()
+	cmd := exec.Command("sqlite3", path)
+	cmd.Stdin = strings.NewReader(sql)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sqlite3 fixture: %v: %s", err, out)
+	}
+}
+
+// TestScanDBPatterns_ColumnNameInjectionDoesNotWriteFile guards the confirmed
+// audit finding: a hostile column name was interpolated into SQL, so the
+// pattern dry-run executed writefile() and created an arbitrary file. The
+// column must be quoted as an identifier and the whole table still scanned.
+func TestScanDBPatterns_ColumnNameInjectionDoesNotWriteFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "attack.db")
+	attackFile := filepath.Join(dir, "pwned")
+	dummy := openaiDummy(t)
+
+	col := `c" ) LIMIT 1; SELECT writefile(` + sqlCharExpr(attackFile) + `, 'CLI'); --`
+	runSQLFile(t, path, fmt.Sprintf(`CREATE TABLE t (id INTEGER PRIMARY KEY, %s TEXT);
+INSERT INTO t (id, %s) VALUES (1, '%s');`,
+		testQuoteIdent(col), testQuoteIdent(col), dummy))
+
+	rep, err := ScanDBPatterns(path, nil, 8, loadBundledPatterns(t), true)
+	if _, statErr := os.Stat(attackFile); statErr == nil {
+		t.Fatalf("column-name injection executed writefile: %s was created", attackFile)
+	}
+	if err != nil {
+		t.Fatalf("ScanDBPatterns on a quoted identifier: %v", err)
+	}
+	if got := rep.TableHits("t", col); got != 1 {
+		t.Fatalf("attack table was not scanned: %v", rep.Tables)
+	}
+}
+
+// TestScanDB_TableNameInjectionDoesNotAttach guards the same finding for the
+// table name: a payload ending the PRAGMA literal used to run ATTACH and
+// CREATE TABLE in the target file.
+func TestScanDB_TableNameInjectionDoesNotAttach(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "attack.db")
+	evil := filepath.Join(dir, "evil.db")
+	secret := "sk-table-injection-1234567890"
+
+	tbl := `x'); ATTACH DATABASE '` + evil + `' AS e; CREATE TABLE e.t(v); --`
+	runSQLFile(t, path, fmt.Sprintf(`CREATE TABLE %s (id INTEGER PRIMARY KEY, content TEXT);
+INSERT INTO %s (id, content) VALUES (1, '%s');`,
+		testQuoteIdent(tbl), testQuoteIdent(tbl), secret))
+
+	rep, err := ScanDB(path, []string{secret}, 8)
+	if _, statErr := os.Stat(evil); statErr == nil {
+		t.Fatalf("table-name injection executed ATTACH: %s was created", evil)
+	}
+	if err != nil {
+		t.Fatalf("ScanDB on a quoted identifier: %v", err)
+	}
+	if got := rep.TableHits(tbl, "content"); got != 1 {
+		t.Fatalf("attack table was not scanned: %v", rep.Tables)
 	}
 }
 
