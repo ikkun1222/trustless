@@ -55,6 +55,31 @@ write_sums() {
     (cd "$SERVER" && sha256sum "$ASSET" > SHA256SUMS)
 }
 write_sums
+# Signature artifacts are only downloaded when a cosign stub is on PATH; their
+# contents are irrelevant to the stub.
+: > "$SERVER/SHA256SUMS.sig"
+: > "$SERVER/SHA256SUMS.pem"
+
+# make_cosign_stub creates a fake cosign that records its argv and exits with
+# the requested status.
+make_cosign_stub() {
+    stub_dir="$1"
+    stub_log="$2"
+    stub_rc="$3"
+    mkdir -p "$stub_dir"
+    cat > "$stub_dir/cosign" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" > "$stub_log"
+exit $stub_rc
+EOF
+    chmod 755 "$stub_dir/cosign"
+}
+
+COSIGN_OK_DIR="$WORK/cosign-ok"
+COSIGN_FAIL_DIR="$WORK/cosign-fail"
+COSIGN_LOG="$WORK/cosign-argv.log"
+make_cosign_stub "$COSIGN_OK_DIR" "$COSIGN_LOG" 0
+make_cosign_stub "$COSIGN_FAIL_DIR" "$WORK/cosign-fail-argv.log" 1
 
 PORT=$(python3 - <<'PY'
 import socket
@@ -77,10 +102,11 @@ for _ in $(seq 1 50); do
 done
 curl -fsS "$BASE/SHA256SUMS" >/dev/null 2>&1 || fail "fixture HTTP server did not start"
 
+RUN_PATH="$BIN"
 run_installer() {
     local dir="$1"
     shift
-    PATH="$BIN" \
+    PATH="$RUN_PATH" \
         TRUSTLESS_INSTALL_DIR="$dir" \
         TRUSTLESS_RELEASE_BASE="$BASE" \
         "$BIN/sh" "$INSTALLER" --minimal "$@"
@@ -141,6 +167,41 @@ else
     cat "$WORK/help.log"
     pass "sh scripts/install.sh --help exited 0"
 fi
+
+echo
+echo "== case 5: cosign is pinned to the release workflow tag identity =="
+rm -f "$COSIGN_LOG"
+RUN_PATH="$COSIGN_OK_DIR:$BIN"
+OUT_COSIGN="$WORK/install-cosign"
+if ! run_installer "$OUT_COSIGN" >"$WORK/cosign-ok.log" 2>&1; then
+    cat "$WORK/cosign-ok.log"
+    fail "installer failed with a successful cosign stub"
+fi
+cat "$WORK/cosign-ok.log"
+[ -f "$COSIGN_LOG" ] || fail "cosign stub was not invoked"
+cat "$COSIGN_LOG"
+grep -Fxq -- '--certificate-identity-regexp' "$COSIGN_LOG" \
+    || fail "cosign argv is missing --certificate-identity-regexp"
+grep -Fxq -- '^https://github\.com/ikkun1222/trustless/\.github/workflows/release\.yml@refs/tags/v' "$COSIGN_LOG" \
+    || fail "cosign identity is not limited to release.yml on a v tag"
+grep -Fxq -- '--certificate-oidc-issuer' "$COSIGN_LOG" \
+    || fail "cosign argv is missing --certificate-oidc-issuer"
+grep -Fxq -- 'https://token.actions.githubusercontent.com' "$COSIGN_LOG" \
+    || fail "cosign issuer is not GitHub Actions OIDC"
+[ -x "$OUT_COSIGN/trustless" ] || fail "install with cosign stub did not place the binary"
+pass "cosign was invoked with the release workflow identity and GitHub OIDC issuer"
+
+echo
+echo "== case 6: cosign verification failure aborts installation =="
+RUN_PATH="$COSIGN_FAIL_DIR:$BIN"
+OUT_COSIGN_FAIL="$WORK/install-cosign-fail"
+if run_installer "$OUT_COSIGN_FAIL" >"$WORK/cosign-fail.log" 2>&1; then
+    cat "$WORK/cosign-fail.log"
+    fail "installer accepted a failed cosign verification"
+fi
+cat "$WORK/cosign-fail.log"
+[ ! -e "$OUT_COSIGN_FAIL/trustless" ] || fail "binary was installed despite cosign failure"
+pass "failed cosign verification caused a non-zero exit and no installation"
 
 echo
 printf 'All %d install.sh checks passed.\n' "$PASS"
