@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md) | **简体中文**
 
-[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.27+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/website-trustless--security.com-3fb950)](https://trustless-security.com)
 [![CI](https://github.com/ikkun1222/trustless/actions/workflows/ci.yml/badge.svg)](https://github.com/ikkun1222/trustless/actions/workflows/ci.yml)
@@ -68,7 +68,7 @@ curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/in
 curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --update
 ```
 
-### 从源码构建（Go 1.26+）
+### 从源码构建（Go 1.27+）
 
 ```bash
 git clone https://github.com/ikkun1222/trustless
@@ -106,7 +106,7 @@ cosign verify-blob --certificate trustless-linux-amd64.pem \
 
 ### 前置条件
 
-- **Go 1.26+**（从源码构建时）
+- **Go 1.27+**（从源码构建时）
 - **`pass`**（标准 Unix 密码管理器）+ **`gpg`** —— 默认凭据后端
 - 使用 `backend = "env"` 时只需环境变量（不需要 `pass`）
 - **`bw`**（Bitwarden CLI）仅在 `backend = "bitwarden"`（云存储）时需要
@@ -594,7 +594,7 @@ type Backend interface {
 
 ### 前置条件
 
-- Go 1.26+
+- Go 1.27+
 - `pass` CLI + `gpg`（用真实后端测试时）
 
 ### 构建

@@ -2,7 +2,7 @@
 
 **English** | [日本語](README.ja.md) | [简体中文](README.zh.md)
 
-[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.27+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/website-trustless--security.com-3fb950)](https://trustless-security.com)
 [![CI](https://github.com/ikkun1222/trustless/actions/workflows/ci.yml/badge.svg)](https://github.com/ikkun1222/trustless/actions/workflows/ci.yml)
@@ -76,7 +76,7 @@ To upgrade an existing installation:
 curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --update
 ```
 
-### From source (Go 1.26+)
+### From source (Go 1.27+)
 
 ```bash
 git clone https://github.com/ikkun1222/trustless
@@ -118,7 +118,7 @@ with syft for supply-chain transparency.
 
 ### Prerequisites
 
-- **Go 1.26+** for building from source
+- **Go 1.27+** for building from source
 - **`pass`** (the standard Unix password manager) + **`gpg`** — the default credential backend
 - Environment variables only (no `pass` needed) when using `backend = "env"`
 - **`bw`** (Bitwarden CLI) required only when using `backend = "bitwarden"` (cloud store)
@@ -606,7 +606,7 @@ For full configuration options, see the [design document](docs/design.md).
 
 ### Prerequisites
 
-- Go 1.26+
+- Go 1.27+
 - `pass` CLI + `gpg` (for testing with a real backend)
 
 ### Building

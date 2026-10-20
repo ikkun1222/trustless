@@ -2,7 +2,7 @@
 
 [English](README.md) | **日本語** | [简体中文](README.zh.md)
 
-[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.27+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/website-trustless--security.com-3fb950)](https://trustless-security.com)
 [![CI](https://github.com/ikkun1222/trustless/actions/workflows/ci.yml/badge.svg)](https://github.com/ikkun1222/trustless/actions/workflows/ci.yml)
@@ -70,7 +70,7 @@ curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/in
 curl -fsSL https://raw.githubusercontent.com/ikkun1222/trustless/main/scripts/install.sh | sh -s -- --update
 ```
 
-### Go 1.26+ からビルド
+### Go 1.27+ からビルド
 
 ```bash
 git clone https://github.com/ikkun1222/trustless
@@ -112,7 +112,7 @@ cosign verify-blob --certificate trustless-linux-amd64.pem \
 
 ### 前提条件
 
-- **Go 1.26+**（ビルド用）
+- **Go 1.27+**（ビルド用）
 - **`pass`**（Unixパスワードマネージャー）+ **`gpg`** — デフォルトのcredentialバックエンド
 - 環境変数のみを使う場合は `backend = "env"` で pass 不要
 - **`bw`**（Bitwarden CLI）は `backend = "bitwarden"`（クラウドストア）を使う場合のみ必要
@@ -550,7 +550,7 @@ type Backend interface {
 
 ### 前提
 
-- Go 1.26+
+- Go 1.27+
 - `pass` CLI + `gpg`（実バックエンドでのテスト用）
 
 ### ビルド

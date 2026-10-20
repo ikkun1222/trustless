@@ -50,6 +50,23 @@ func (b *OAuthBackend) SetAudit(s audit.Sink) {
 	b.audit = s
 }
 
+// Reload drops the in-memory access-token cache and forwards the reload to the
+// wrapped backend when it supports one.
+//
+// serve は SIGHUP で `Reload(context.Context) error` を型アサートして呼ぶ。
+// デコレータがこのメソッドを持たないと、アサートが失敗して **黙ってスキップ** され、
+// 内側（Bitwarden 等）のキャッシュ更新も access token の再解決も起きない。
+func (b *OAuthBackend) Reload(ctx context.Context) error {
+	b.mu.Lock()
+	b.cache = make(map[string]cacheEntry)
+	b.mu.Unlock()
+
+	if r, ok := b.inner.(interface{ Reload(context.Context) error }); ok {
+		return r.Reload(ctx)
+	}
+	return nil
+}
+
 // emitRefresh records one oauth refresh outcome: success, reauth required
 // (invalid_grant), or other failure. Only the key name and provider are
 // logged — never token values.

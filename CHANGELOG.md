@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Update Go toolchain to 1.27.3 — fixes 9 standard-library vulnerabilities
+  (GO-2026-6603, 6605, 6607, 6608, 6610, 6611, 6612, 6613, 6617) that
+  `govulncheck` reports as reachable from the OAuth device flow, MITM proxy,
+  DLP server, audit sink, and scrub paths. `govulncheck` reports zero findings
+  again; CI and the release workflow now build on Go 1.27.3.
 - Update Go toolchain to 1.26.6 — fixes 5 standard-library vulnerabilities
   (GO-2026-6218 net/url, GO-2026-6090 crypto/tls, GO-2026-6089 + GO-2026-5026
   net/http, GO-2026-5972 encoding/asn1) that were reachable via the OAuth
@@ -60,7 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `go` directive in go.mod raised to 1.26.6 (requires Go 1.26.6+ to build).
+- `go` directive in go.mod raised to 1.27.3 (requires Go 1.27.3+ to build).
 - CI now runs `govulncheck` and reports test coverage on every push.
 - `trustless version` now reports the build-embedded version; release
   binaries embed the tag via ldflags (`-X main.version=vX.Y.Z`) instead of a

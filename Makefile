@@ -1,6 +1,6 @@
 # trustless — credential broker for AI agents
 # Quality gates: gofmt + go vet + gocyclo + go test -race + secrets
-.PHONY: build test vet fmt fmt-check lint complexity secrets-check audit coverage validate-plugin check clean
+.PHONY: build test vet fmt fmt-check lint complexity secrets-check audit coverage validate-plugin check test-install-sh clean
 
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o trustless .
@@ -53,6 +53,10 @@ coverage:
 # Agent Plugins 1.0.0 packaging validation (plugin.json / skills)
 validate-plugin:
 	python3 scripts/validate-plugin.py
+
+# Installer regression test against a loopback release fixture (not in check).
+test-install-sh:
+	@bash tests/install_sh_test.sh
 
 check: validate-plugin fmt-check vet complexity test
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"testing"
 
@@ -50,6 +51,7 @@ func newTestProxy(rules map[string]config.ProxyRule, allowlist []string) *Proxy 
 		}},
 		rules:     rules,
 		allowlist: allowlist,
+		transport: newUpstreamTransport(),
 	}
 }
 
@@ -299,6 +301,43 @@ func TestProxy通常リクエストはmux経由で処理される(t *testing.T) 
 	// 上流接続（ポート1）に失敗するので 502 になる（404 ではない = mux 経由の証拠）
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("GET status = %d, want 502 (upstream unreachable)", rec.Code)
+	}
+}
+
+// TestProxy_PlainHTTPIgnoresEnvironmentProxy pins the credential-broker rule:
+// plaintext forwarding must dial the target directly, never an environment
+// HTTP_PROXY (which would receive injected credentials).
+//
+// ProxyFromEnvironment deliberately bypasses loopback targets, so HTTP_PROXY
+// alone cannot distinguish direct dialing from http.DefaultTransport on an
+// httptest listener. The sentinel DefaultTransport below fails any request
+// routed through it, making the difference observable.
+func TestProxy_PlainHTTPIgnoresEnvironmentProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("direct"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("http_proxy", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+
+	oldDefault := http.DefaultTransport
+	http.DefaultTransport = &http.Transport{
+		Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: "127.0.0.1:1"}),
+	}
+	t.Cleanup(func() { http.DefaultTransport = oldDefault })
+
+	p := newTestProxy(nil, nil)
+	rec := httptest.NewRecorder()
+	p.handler().ServeHTTP(rec, httptestNewRequest(http.MethodGet, upstream.URL+"/hello"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (environment proxy must not be used)", rec.Code)
+	}
+	if got := rec.Body.String(); got != "direct" {
+		t.Fatalf("body = %q, want %q", got, "direct")
 	}
 }
 

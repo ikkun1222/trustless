@@ -222,3 +222,135 @@ func TestScrubTextFiles_PatternLogMode(t *testing.T) {
 		t.Fatalf("marker missing: %q", data)
 	}
 }
+
+// TestScrubTextFiles_SkipsSymlinkToOutside is the regression for the symlink
+// escape: a symlink inside root pointing outside must not be followed (the
+// target must stay untouched), while a regular file in the same root is still
+// scrubbed.
+func TestScrubTextFiles_SkipsSymlinkToOutside(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside")
+	mustNoErr(t, os.MkdirAll(root, 0o755))
+	mustNoErr(t, os.MkdirAll(outside, 0o755))
+	secret := "sk-symlink-secret-1234567890"
+
+	victim := filepath.Join(outside, "secret.md")
+	mustNoErr(t, os.WriteFile(victim, []byte("outside key "+secret), 0o600))
+	link := filepath.Join(root, "victim.md")
+	mustNoErr(t, os.Symlink(victim, link))
+	regular := filepath.Join(root, "note.md")
+	mustNoErr(t, os.WriteFile(regular, []byte("inside key "+secret), 0o600))
+
+	rep, err := ScrubTextFiles(root, []string{secret}, 8, nil, true)
+	mustNoErr(t, err)
+
+	outsideData, err := os.ReadFile(victim)
+	mustNoErr(t, err)
+	if !strings.Contains(string(outsideData), secret) {
+		t.Fatalf("symlink target outside root was modified: %q", outsideData)
+	}
+	insideData, err := os.ReadFile(regular)
+	mustNoErr(t, err)
+	if strings.Contains(string(insideData), secret) || !strings.Contains(string(insideData), "<redacted>") {
+		t.Fatalf("regular file was not scrubbed: %q", insideData)
+	}
+	info, err := os.Lstat(link)
+	mustNoErr(t, err)
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("symlink was replaced by a regular file: mode=%v", info.Mode())
+	}
+	if rep.Skipped < 1 {
+		t.Fatalf("skipped count = %d, want >= 1", rep.Skipped)
+	}
+	if rep.Files != 1 {
+		t.Fatalf("files scanned = %d, want 1 (only the regular file)", rep.Files)
+	}
+}
+
+// TestScanTextFiles_SkipsSymlink keeps the dry-run target set identical to
+// --apply: the symlink must not be reported as a hit and must not count as a
+// scanned file.
+func TestScanTextFiles_SkipsSymlink(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := "sk-scan-symlink-secret-123456"
+
+	victim := filepath.Join(outside, "secret.md")
+	if err := os.WriteFile(victim, []byte("key "+secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "victim.md")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Fatal(err)
+	}
+	regular := filepath.Join(root, "note.md")
+	if err := os.WriteFile(regular, []byte("key "+secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := ScanTextFiles(root, []string{secret}, 8, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := rep.Hits[link]; ok {
+		t.Fatalf("symlink reported as a hit: %v", rep.Hits)
+	}
+	if _, ok := rep.Hits[regular]; !ok {
+		t.Fatalf("regular file missing from hits: %v", rep.Hits)
+	}
+	if rep.Skipped < 1 {
+		t.Fatalf("skipped count = %d, want >= 1", rep.Skipped)
+	}
+	if rep.Files != 1 {
+		t.Fatalf("files scanned = %d, want 1", rep.Files)
+	}
+}
+
+// TestScrubTextFiles_DoesNotFollowDirectorySymlink pins the existing behavior:
+// a directory symlink is never descended into.
+func TestScrubTextFiles_DoesNotFollowDirectorySymlink(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := "sk-dirlink-secret-1234567890"
+
+	victim := filepath.Join(outside, "secret.md")
+	if err := os.WriteFile(victim, []byte("key "+secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linkdir")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ScrubTextFiles(root, []string{secret}, 8, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), secret) {
+		t.Fatalf("directory symlink was descended into and target modified: %q", data)
+	}
+}
+
+func mustNoErr(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
