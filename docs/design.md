@@ -19,7 +19,7 @@ trustless:    agent → says "use GITHUB_TOKEN" → broker resolves → agent ge
 
 ## Technology Stack
 
-**Language:** Go (1.26+)
+**Language:** Go (1.27+)
 - Single binary cross-compilation (`GOOS`/`GOARCH`)
 - All required capabilities in stdlib: `net/http`, `os/exec`, `crypto/*`, `encoding/json`, `net` (Unix sockets)
 - CLI argument parsing uses `std flag` — subcommand dispatch is hand-written (manageable at this scale)
