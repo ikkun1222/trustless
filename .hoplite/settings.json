@@ -4,7 +4,7 @@
   "scripts": {
     "setup": {
       "enabled": true,
-      "command": "command -v go >/dev/null 2>&1 || mise use -g go@1.27.3; command -v git-lfs >/dev/null 2>&1 || sudo apt-get install -y -qq git-lfs >/dev/null 2>&1; command -v sqlite3 >/dev/null 2>&1 || (sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq sqlite3 >/dev/null 2>&1 || true)"
+      "command": "missing=''; for t in go git-lfs sqlite3; do command -v \"$t\" >/dev/null 2>&1 || missing=\"$missing $t\"; done; if [ -n \"$missing\" ]; then echo \"trustless dev setup: missing tools:$missing\"; echo \"install them yourself (see README, Development) — this hook never runs sudo or mutates your global toolchain\"; fi; exit 0"
     },
     "run": {"enabled": true, "command": null},
     "archive": {"enabled": true, "command": null},
