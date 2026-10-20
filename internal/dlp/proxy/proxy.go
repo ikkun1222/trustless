@@ -96,6 +96,10 @@ type Proxy struct {
 	patternMode *PatternMode
 	logger      *log.Logger
 	audit       audit.Sink
+	// boundHost is the configured upstream authority (host:port). Audit
+	// events use it instead of the request's absolute-form target, which is
+	// caller-controlled.
+	boundHost string
 }
 
 // New builds a Proxy forwarding to upstreamURL, masking any secret value
@@ -114,6 +118,7 @@ func New(opts Options) http.Handler {
 		patternMode: opts.PatternMode,
 		logger:      opts.Logger,
 		audit:       opts.Audit,
+		boundHost:   target.Host,
 	}
 	if p.secrets == nil {
 		p.secrets = NewSecrets(nil)
@@ -159,10 +164,10 @@ func (p *Proxy) scanBody(w http.ResponseWriter, req *http.Request) bool {
 	if err != nil {
 		switch {
 		case errors.Is(err, errBodyTooLarge):
-			p.logf("scan: decoded body exceeds %d bytes (%s) %s %s", maxDecodedBody, coding, req.Method, req.URL.Path)
+			p.logf("scan: decoded body exceeds %d bytes (%s) %s %q", maxDecodedBody, coding, req.Method, req.URL.Path)
 			http.Error(w, "request body too large after decoding", http.StatusRequestEntityTooLarge)
 		case errors.Is(err, errUnsupportedEncoding):
-			p.logf("scan: unsupported content-encoding %q %s %s", coding, req.Method, req.URL.Path)
+			p.logf("scan: unsupported content-encoding %q %s %q", coding, req.Method, req.URL.Path)
 			http.Error(w, "unsupported content-encoding", http.StatusUnsupportedMediaType)
 		default:
 			p.logf("scan: decode %s body: %v", coding, err)
@@ -253,12 +258,12 @@ func (p *Proxy) redactText(req *http.Request, text string) string {
 			// 第1層のマスクは常に適用（changed は既に反映済み）。
 			// 第2層は検出のみ: 本文を変えず audit を発行する（段階ロールアウト用）。
 			if _, patHit := p.patterns.Scan(text); patHit {
-				p.logf("scan: pattern detected (mode=log) %s %s", req.Method, req.URL.Path)
+				p.logf("scan: pattern detected (mode=log) %s %q", req.Method, req.URL.Path)
 				if p.audit != nil {
 					p.audit.Emit(audit.Event{
 						TS:      time.Now(),
 						Event:   audit.DlpRedact,
-						Host:    req.URL.Host,
+						Host:    p.boundHost,
 						Verdict: audit.VerdictRedact,
 						Detail:  "patterns=hit&mode=log",
 					})
@@ -272,12 +277,12 @@ func (p *Proxy) redactText(req *http.Request, text string) string {
 		}
 	}
 	if changed {
-		p.logf("scan: redacted secrets in %s %s", req.Method, req.URL.Path)
+		p.logf("scan: redacted secrets in %s %q", req.Method, req.URL.Path)
 		if p.audit != nil {
 			p.audit.Emit(audit.Event{
 				TS:      time.Now(),
 				Event:   audit.DlpRedact,
-				Host:    req.URL.Host,
+				Host:    p.boundHost,
 				Verdict: audit.VerdictRedact,
 				Detail:  "redacted=true",
 			})

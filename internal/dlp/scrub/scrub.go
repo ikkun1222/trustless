@@ -14,6 +14,7 @@ package scrub
 import (
 	"bufio"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +22,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 
 	"github.com/ikkun1222/trustless/internal/dlp/redact"
 )
@@ -62,6 +65,56 @@ func secretHex(secret string) string {
 	return "X'" + hex.EncodeToString([]byte(secret)) + "'"
 }
 
+// quoteIdent renders name as a SQL identifier, doubling any embedded double
+// quote. Table, column and index names come from the DB being scrubbed — data
+// a hostile DB or dump can choose — so they must never be interpolated raw.
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// quoteLiteral renders s as a single-quoted SQL string literal. Used where
+// SQLite does not accept a bound parameter: PRAGMA table_info takes a literal,
+// not a placeholder.
+func quoteLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// sqliteSupportsSafe reports whether this sqlite3 build accepts -safe. The
+// flag (SQLite 3.31+) turns on defensive mode, which blocks writefile(),
+// ATTACH and load_extension — defence in depth against a hostile schema even
+// if a quoting bug slips through. Older builds are detected once and skipped
+// with a single visible warning instead of failing every scrub.
+var sqliteSupportsSafe = sync.OnceValue(func() bool {
+	out, err := exec.Command("sqlite3", "-safe", "-batch", ":memory:", "SELECT 1;").CombinedOutput()
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		// Let the real invocation report the missing binary.
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "scrub: sqlite3 does not support -safe; continuing without it: %s\n",
+		strings.TrimSpace(string(out)))
+	return false
+})
+
+// sqliteCmd builds the sqlite3 invocation shared by every query path.
+func sqliteCmd(path string) *exec.Cmd {
+	return sqliteCmdSafe(path, true)
+}
+
+// sqliteCmdSafe builds sqlite3 options, optionally with -safe. Only VACUUM
+// opts out: SQLite implements VACUUM by ATTACHing a temporary rebuild
+// database, and the CLI's safe mode rejects that ("cannot run ATTACH in safe
+// mode"). VACUUM carries no schema name, so it has nothing to quote.
+func sqliteCmdSafe(path string, safe bool) *exec.Cmd {
+	args := []string{"-batch", "-bail", "-cmd", ".timeout 30000"}
+	if safe && sqliteSupportsSafe() {
+		args = append(args, "-safe")
+	}
+	return exec.Command("sqlite3", append(args, path)...)
+}
+
 // sqlite runs the sqlite3 CLI against path with the given SQL, returning
 // combined stdout/stderr. A generous busy_timeout lets concurrent Hermes
 // processes (the gateway or an active CLI session) release their locks
@@ -79,7 +132,10 @@ func sqlite(path string, sql string) (string, error) {
 // sqliteStdin is sqlite() with the SQL streamed from r, so statements of
 // unbounded size (a batched UPDATE replay) can be passed without argv limits.
 func sqliteStdin(path string, r io.Reader) (string, error) {
-	cmd := exec.Command("sqlite3", "-batch", "-bail", "-cmd", ".timeout 30000", path)
+	return sqliteStdinCmd(sqliteCmd(path), r)
+}
+
+func sqliteStdinCmd(cmd *exec.Cmd, r io.Reader) (string, error) {
 	cmd.Stdin = r
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -88,12 +144,19 @@ func sqliteStdin(path string, r io.Reader) (string, error) {
 	return string(out), nil
 }
 
+// sqliteVacuum rebuilds the database file to purge freed pages. It runs the
+// one fixed statement that cannot use -safe (see sqliteCmdSafe).
+func sqliteVacuum(path string) error {
+	_, err := sqliteStdinCmd(sqliteCmdSafe(path, false), strings.NewReader("VACUUM;\n"))
+	return err
+}
+
 // sqliteEachRow runs a SELECT through the sqlite3 CLI and hands each stdout
 // line to fn as it arrives. sqlite() buffers the entire result, which costs
 // 2x the column size for a hex-encoded scan (opencode.db reached 5.9 GB RSS
 // and would have been OOM-killed on the 11 GB host).
 func sqliteEachRow(path, sql string, fn func(line string) error) error {
-	cmd := exec.Command("sqlite3", "-batch", "-bail", "-cmd", ".timeout 30000", path)
+	cmd := sqliteCmd(path)
 	cmd.Stdin = strings.NewReader(sql + "\n")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -163,7 +226,7 @@ func listTables(path string) ([]string, error) {
 
 // listColumns returns column names for a table.
 func listColumns(path, table string) ([]string, error) {
-	out, err := sqlite(path, fmt.Sprintf("PRAGMA table_info('%s');", table))
+	out, err := sqlite(path, "PRAGMA table_info("+quoteLiteral(table)+");")
 	if err != nil {
 		return nil, err
 	}
@@ -219,8 +282,8 @@ func scanColumns(path, table string) ([]string, error) {
 // いた＝秘密の見落とし。EXISTS 相当の早期終了クエリなので、text が 1 つも
 // 無い列だけがフルスキャン 1 回のコストを払う。
 func isTextColumn(path, table, col string) bool {
-	out, err := sqlite(path, fmt.Sprintf(`SELECT typeof("%s") FROM "%s" WHERE "%s" IS NOT NULL AND typeof("%s") IN ('text','blob') LIMIT 1;`,
-		col, table, col, col))
+	out, err := sqlite(path, fmt.Sprintf(`SELECT typeof(%s) FROM %s WHERE %s IS NOT NULL AND typeof(%s) IN ('text','blob') LIMIT 1;`,
+		quoteIdent(col), quoteIdent(table), quoteIdent(col), quoteIdent(col)))
 	if err != nil {
 		return false
 	}
@@ -234,12 +297,12 @@ func countHits(path, table, col string, secrets []string, minLen int) (int, erro
 		if len(s) < minLen {
 			continue
 		}
-		conds = append(conds, fmt.Sprintf("instr(\"%s\", %s) > 0", col, secretHex(s)))
+		conds = append(conds, fmt.Sprintf("instr(%s, %s) > 0", quoteIdent(col), secretHex(s)))
 	}
 	if len(conds) == 0 {
 		return 0, nil
 	}
-	q := fmt.Sprintf("SELECT COUNT(*) FROM \"%s\" WHERE %s;", table, strings.Join(conds, " OR "))
+	q := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s;", quoteIdent(table), strings.Join(conds, " OR "))
 	out, err := sqlite(path, q)
 	if err != nil {
 		return 0, err
@@ -315,7 +378,7 @@ func ScrubDB(path string, secrets []string, minLen int, backup bool) (*Report, e
 		return nil, err
 	}
 	for _, f := range fts {
-		if _, err := sqlite(path, fmt.Sprintf("INSERT INTO \"%s\"(\"%s\") VALUES('rebuild');", f, f)); err != nil {
+		if _, err := sqlite(path, fmt.Sprintf("INSERT INTO %s(%s) VALUES('rebuild');", quoteIdent(f), quoteIdent(f))); err != nil {
 			return nil, fmt.Errorf("fts rebuild %s: %w", f, err)
 		}
 		rep.FTSRebuilt = append(rep.FTSRebuilt, f)
@@ -330,7 +393,7 @@ func ScrubDB(path string, secrets []string, minLen int, backup bool) (*Report, e
 	// no new remnant (the previous VACUUM already purged the last batch),
 	// and VACUUM on a multi-GB DB costs minutes.
 	if rep.TotalHits() > 0 {
-		if _, err := sqlite(path, "VACUUM;"); err != nil {
+		if err := sqliteVacuum(path); err != nil {
 			return nil, fmt.Errorf("vacuum: %w", err)
 		}
 	}
@@ -354,8 +417,8 @@ func scrubColumn(path, table, col string, secrets []string, minLen int) (int, er
 			continue
 		}
 		q := fmt.Sprintf(
-			"UPDATE \"%s\" SET \"%s\" = replace(\"%s\", %s, '%s') WHERE instr(\"%s\", %s) > 0;",
-			table, col, col, secretHex(s), Marker, col, secretHex(s),
+			"UPDATE %s SET %s = replace(%s, %s, %s) WHERE instr(%s, %s) > 0;",
+			quoteIdent(table), quoteIdent(col), quoteIdent(col), secretHex(s), quoteLiteral(Marker), quoteIdent(col), secretHex(s),
 		)
 		if _, err := sqlite(path, q); err != nil {
 			return 0, err
@@ -368,15 +431,43 @@ func scrubColumn(path, table, col string, secrets []string, minLen int) (int, er
 // os.ReadFile/os.WriteFile pair held the whole file in memory: --backup on
 // opencode.db (1.9 GB) pushed RSS above 2.4 GB on every daily run, an OOM risk
 // on the 11 GB host.
+//
+// O_NOFOLLOW is required: the DB directory may be writable by another party
+// that can plant <db>.bak as a symlink, and following it would let them have
+// operator-privileged writes land in any file the operator can open. The
+// fstat check rejects non-regular files and hardlinks too. Truncation happens
+// only after those checks, so a refusal never destroys the target.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("refusing to write through a symlink at %s", dst)
+		}
 		return err
+	}
+	st, err := out.Stat()
+	if err != nil {
+		_ = out.Close()
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		_ = out.Close()
+		return fmt.Errorf("refusing to write to non-regular file at %s", dst)
+	}
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok && sys.Nlink != 1 {
+		_ = out.Close()
+		return fmt.Errorf("refusing to write to file with %d links at %s", sys.Nlink, dst)
+	}
+	if st.Size() != 0 {
+		if err := out.Truncate(0); err != nil {
+			_ = out.Close()
+			return err
+		}
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		_ = out.Close()
@@ -462,7 +553,7 @@ func ScrubDBPatterns(path string, secrets []string, minLen int, patterns *redact
 		return nil, err
 	}
 	for _, f := range fts {
-		if _, err := sqlite(path, fmt.Sprintf("INSERT INTO \"%s\"(\"%s\") VALUES('rebuild');", f, f)); err != nil {
+		if _, err := sqlite(path, fmt.Sprintf("INSERT INTO %s(%s) VALUES('rebuild');", quoteIdent(f), quoteIdent(f))); err != nil {
 			return nil, fmt.Errorf("fts rebuild %s: %w", f, err)
 		}
 		rep.FTSRebuilt = append(rep.FTSRebuilt, f)
@@ -471,7 +562,7 @@ func ScrubDBPatterns(path string, secrets []string, minLen int, patterns *redact
 
 	// Purge physical remnants of scrubbed secrets, matching ScrubDB.
 	if rep.TotalHits() > 0 {
-		if _, err := sqlite(path, "VACUUM;"); err != nil {
+		if err := sqliteVacuum(path); err != nil {
 			return nil, fmt.Errorf("vacuum: %w", err)
 		}
 	}
@@ -522,14 +613,14 @@ func scanColumnRows(path, table, col string, secrets []string, minLen int, patte
 	}
 	// Values above maxScanValue are counted and skipped: transferring one would
 	// need 2x its size as hex and can exceed the scanner buffer.
-	oversized, err := countRows(path, fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "%s" IS NOT NULL AND length("%s") > %d;`,
-		table, col, col, maxScanValue))
+	oversized, err := countRows(path, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s IS NOT NULL AND length(%s) > %d;`,
+		quoteIdent(table), quoteIdent(col), quoteIdent(col), maxScanValue))
 	if err != nil {
 		return 0, 0, err
 	}
 	n := 0
-	err = sqliteEachRow(path, fmt.Sprintf(`SELECT rowid, typeof("%s"), hex("%s") FROM "%s" WHERE "%s" IS NOT NULL AND length("%s") <= %d;`,
-		col, col, table, col, col, maxScanValue), func(line string) error {
+	err = sqliteEachRow(path, fmt.Sprintf(`SELECT rowid, typeof(%s), hex(%s) FROM %s WHERE %s IS NOT NULL AND length(%s) <= %d;`,
+		quoteIdent(col), quoteIdent(col), quoteIdent(table), quoteIdent(col), quoteIdent(col), maxScanValue), func(line string) error {
 		if line == "" {
 			return nil
 		}
@@ -616,11 +707,18 @@ func newUpdateBatch() (*updateBatch, error) {
 // CAST(X'..' AS TEXT) still round-trips arbitrary bytes — hex needs no
 // escaping — and keeps TEXT as TEXT; a BLOB row keeps the bare literal.
 func (b *updateBatch) Add(table, col, kind, text, rid string) error {
+	// rid is read back from the DB, not from our own code: a table with a
+	// column literally named "rowid" shadows the alias and can hand us arbitrary
+	// text. It is a value, not an identifier, so reject anything non-numeric
+	// instead of quoting it into the statement.
+	if _, err := strconv.ParseInt(rid, 10, 64); err != nil {
+		return fmt.Errorf("rowid %q: %w", rid, err)
+	}
 	lit := secretHex(text)
 	if kind == "text" {
 		lit = "CAST(" + lit + " AS TEXT)"
 	}
-	if _, err := fmt.Fprintf(b.f, "UPDATE \"%s\" SET \"%s\" = %s WHERE rowid = %s;\n", table, col, lit, rid); err != nil {
+	if _, err := fmt.Fprintf(b.f, "UPDATE %s SET %s = %s WHERE rowid = %s;\n", quoteIdent(table), quoteIdent(col), lit, rid); err != nil {
 		return fmt.Errorf("write updates: %w", err)
 	}
 	return nil

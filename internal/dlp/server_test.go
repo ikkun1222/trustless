@@ -388,6 +388,103 @@ func TestRefreshLoop_ManualReload(t *testing.T) {
 	}
 }
 
+// TestReload_EmptyResultKeepsArmedSet is the regression for the empty
+// hot-reload: a loader that returns zero secrets with no error must not
+// disarm the proxy. The previous set stays armed and the event is a warning.
+func TestReload_EmptyResultKeepsArmedSet(t *testing.T) {
+	const secret = "sk-armed-secret-1234567890"
+	set := proxy.NewSecrets([]string{secret})
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	cfg := &config.Config{SecretsSource: config.SecretsPass}
+	load := func(*config.Config) ([]string, error) { return nil, nil }
+
+	reload(cfg, set, load, logger)
+
+	if got := set.Snapshot(); len(got) != 1 || got[0] != secret {
+		t.Fatalf("set = %v, want the armed secret kept", got)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "WARN: secret reload returned 0 secrets; keeping 1") {
+		t.Fatalf("expected keep warning, got: %s", logs)
+	}
+	if strings.Contains(logs, "reloaded 0 secrets") {
+		t.Fatalf("must not report an empty reload as success, got: %s", logs)
+	}
+}
+
+// TestReload_ReplacesWithFreshSet verifies the normal reload path still
+// swaps the armed set (the empty-result guard must not break hot reload).
+func TestReload_ReplacesWithFreshSet(t *testing.T) {
+	const oldSecret = "sk-old-secret-1234567890"
+	fresh := []string{"sk-new-a-1234567890", "sk-new-b-1234567890"}
+	set := proxy.NewSecrets([]string{oldSecret})
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	cfg := &config.Config{SecretsSource: config.SecretsPass}
+	load := func(*config.Config) ([]string, error) { return fresh, nil }
+
+	reload(cfg, set, load, logger)
+
+	got := set.Snapshot()
+	if len(got) != 2 || got[0] != fresh[0] || got[1] != fresh[1] {
+		t.Fatalf("set = %v, want %v", got, fresh)
+	}
+	if !strings.Contains(buf.String(), "reloaded 2 secrets") {
+		t.Fatalf("expected reload log, got: %s", buf.String())
+	}
+}
+
+// TestCheckStartupSecrets_ZeroWithPatternsWarns verifies that an empty
+// secret source is allowed at startup when the pattern layer can mask.
+func TestCheckStartupSecrets_ZeroWithPatternsWarns(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	if err := checkStartupSecrets(0, loadTestPatterns(t), config.SecretsPass, logger); err != nil {
+		t.Fatalf("startup with patterns must be allowed: %v", err)
+	}
+	want := "WARN: 0 known secrets loaded (pass) — only pattern masking is active"
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("expected %q, got: %s", want, buf.String())
+	}
+}
+
+// TestCheckStartupSecrets_ZeroWithoutPatternsFails verifies fail-closed
+// startup when nothing at all can be masked.
+func TestCheckStartupSecrets_ZeroWithoutPatternsFails(t *testing.T) {
+	err := checkStartupSecrets(0, nil, config.SecretsPass, log.New(io.Discard, "", 0))
+	if err == nil {
+		t.Fatal("expected startup error when there are no secrets and no patterns")
+	}
+	if !strings.Contains(err.Error(), "0 known secrets") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestCheckStartupSecrets_EmptyPatternSetFails verifies that a non-nil but
+// empty rule set (e.g. every rule disabled) counts as "nothing to mask".
+func TestCheckStartupSecrets_EmptyPatternSetFails(t *testing.T) {
+	err := checkStartupSecrets(0, &redact.PatternSet{}, config.SecretsPass, log.New(io.Discard, "", 0))
+	if err == nil {
+		t.Fatal("expected startup error when the pattern set has no rules")
+	}
+}
+
+// TestCheckStartupSecrets_NonZeroOK verifies an armed set starts without a
+// warning regardless of the pattern layer.
+func TestCheckStartupSecrets_NonZeroOK(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	if err := checkStartupSecrets(3, nil, config.SecretsPass, logger); err != nil {
+		t.Fatalf("nonzero secrets must start: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("unexpected log: %s", buf.String())
+	}
+}
+
 // TestBuildPatternSet_Bundled verifies that an empty rules_file selects the
 // bundled rules.toml (40 gitleaks-compatible rules).
 func TestBuildPatternSet_Bundled(t *testing.T) {

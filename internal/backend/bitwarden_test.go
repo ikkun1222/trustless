@@ -843,6 +843,135 @@ func TestSetは失敗時にエラーを返しキャッシュを変更しない(t
 	}
 }
 
+// fakeSecureNoteItem builds a bw list item shaped like a secureNote with a
+// hidden "value" field, matching what parseBWItems reads.
+func fakeSecureNoteItem(id, name, value string) map[string]any {
+	return map[string]any{
+		"id":         id,
+		"name":       name,
+		"type":       float64(itemTypeSecureNote),
+		"secureNote": map[string]any{"type": float64(0)},
+		"fields": []any{
+			map[string]any{"name": "value", "type": float64(fieldTypeHidden), "value": value},
+		},
+		"notes": "",
+	}
+}
+
+func TestSetはログインアイテムのloginパスワードを更新しResolveが新値を返す(t *testing.T) {
+	vault := newFakeVault(map[string]any{
+		"id":     "item-login",
+		"name":   "gh-api",
+		"type":   float64(itemTypeLogin),
+		"login":  map[string]any{"username": "me", "password": "OLD"},
+		"fields": []any{},
+		"notes":  "",
+	})
+	fake := &fakeBW{vault: vault}
+
+	be := NewBitwardenBackend(Options{
+		SessionPath: filepath.Join(t.TempDir(), "bw-session"),
+		runList:     fake.runList,
+		runStatus:   fake.runStatus,
+		runExec:     fake.runExec,
+	})
+	if err := be.Load(context.Background()); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if err := be.Set(context.Background(), "gh-api", "NEW"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	val, err := be.Resolve(context.Background(), "gh-api")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if val != "NEW" {
+		t.Fatalf("resolve value = %q, want %q", val, "NEW")
+	}
+
+	if len(fake.execArgs) != 2 {
+		t.Fatalf("expected get + edit calls, got %v", fake.execArgs)
+	}
+	item := decodeItemPayload(t, fake.execArgs[1][3])
+	login, _ := item["login"].(map[string]any)
+	if login["password"] != "NEW" {
+		t.Fatalf("edit payload login.password = %v, want NEW", login["password"])
+	}
+	if fields, _ := item["fields"].([]any); len(fields) != 0 {
+		t.Fatalf("Set must not add a hidden value field to a login item: %v", fields)
+	}
+}
+
+func TestSetは同名重複の最後のアイテムを更新しResolveが新値を返す(t *testing.T) {
+	vault := newFakeVault(
+		fakeSecureNoteItem("item-first", "dup/key", "OLD-FIRST"),
+		fakeSecureNoteItem("item-last", "dup/key", "OLD-LAST"),
+	)
+	fake := &fakeBW{vault: vault}
+
+	be := NewBitwardenBackend(Options{
+		SessionPath: filepath.Join(t.TempDir(), "bw-session"),
+		runList:     fake.runList,
+		runStatus:   fake.runStatus,
+		runExec:     fake.runExec,
+	})
+	if err := be.Load(context.Background()); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if err := be.Set(context.Background(), "dup/key", "NEW"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	val, err := be.Resolve(context.Background(), "dup/key")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if val != "NEW" {
+		t.Fatalf("resolve value = %q, want %q (last duplicate must be updated)", val, "NEW")
+	}
+
+	if len(fake.execArgs) != 2 {
+		t.Fatalf("expected get + edit calls, got %v", fake.execArgs)
+	}
+	editArgs := fake.execArgs[1]
+	if editArgs[2] != "item-last" {
+		t.Fatalf("edit targeted %q, want item-last (last duplicate wins)", editArgs[2])
+	}
+}
+
+func TestSetは書き込み後のreadback不一致でエラーを返す(t *testing.T) {
+	staleList := `[{"id":"item-login","name":"gh-api","type":1,"login":{"password":"OLD"},"fields":[],"notes":""}]`
+	rawItem := `{"id":"item-login","name":"gh-api","type":1,"login":{"password":"OLD"},"fields":[],"notes":""}`
+
+	be := NewBitwardenBackend(Options{
+		SessionPath: filepath.Join(t.TempDir(), "bw-session"),
+		runList: func(ctx context.Context) ([]byte, error) {
+			return []byte(staleList), nil
+		},
+		runExec: func(ctx context.Context, args []string) ([]byte, error) {
+			if args[0] == "get" {
+				return []byte(rawItem), nil
+			}
+			return nil, nil // edit reports success but the vault never changes
+		},
+	})
+	if err := be.Load(context.Background()); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	err := be.Set(context.Background(), "gh-api", "NEW")
+	if err == nil {
+		t.Fatalf("expected read-back mismatch error, got nil")
+	}
+	want := "bitwarden: Set reported success but Resolve still returns the old value for gh-api"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err, want)
+	}
+}
+
 var (
 	errTestBwDown         = &fakeBWError{msg: "bw not reachable"}
 	errTestSessionExpired = &fakeBWError{msg: "not logged in"}

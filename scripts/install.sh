@@ -139,7 +139,7 @@ verify_signature() {
     if ! cosign verify-blob \
         --certificate "$pem_file" \
         --signature "$sig_file" \
-        --certificate-identity-regexp '^https://github\.com/ikkun1222/trustless/' \
+        --certificate-identity-regexp '^https://github\.com/ikkun1222/trustless/\.github/workflows/release\.yml@refs/tags/v' \
         --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
         "$checksum_file"; then
         error "Signature verification failed — aborting"

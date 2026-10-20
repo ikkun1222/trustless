@@ -95,6 +95,9 @@ func start(args []string) {
 	if err != nil {
 		logger.Fatalf("patterns: %v", err) // fail-closed
 	}
+	if err := checkStartupSecrets(len(secrets), patterns, cfg.SecretsSource, logger); err != nil {
+		logger.Fatalf("startup: %v", err) // fail-closed
+	}
 	handler := buildHandler(cfg, secretSet, patterns, dlpproxy.NewPatternMode(string(cfg.PatternMode)), logger, audit.Off())
 	load := func(cfg *dlpconfig.Config) ([]string, error) {
 		return loadSecrets(cfg)
@@ -117,6 +120,21 @@ func start(args []string) {
 	if err := http.ListenAndServe(cfg.Listen, handler); err != nil {
 		logger.Fatalf("server: %v", err)
 	}
+}
+
+// checkStartupSecrets enforces the startup invariant: an armed proxy must
+// have something to mask. Zero known secrets is acceptable only when the
+// pattern layer is present; otherwise startup fails (fail-closed) instead of
+// presenting an unarmed proxy to the operator as if it were protected.
+func checkStartupSecrets(n int, patterns *redact.PatternSet, source dlpconfig.SecretsSource, logger *log.Logger) error {
+	if n > 0 {
+		return nil
+	}
+	if patterns.Count() > 0 {
+		logger.Printf("WARN: 0 known secrets loaded (%s) — only pattern masking is active", source)
+		return nil
+	}
+	return fmt.Errorf("0 known secrets loaded (%s) and no pattern rules configured: refusing to start unarmed", source)
 }
 
 // loadSecrets loads known secrets for the configured source: pass (default)
@@ -264,11 +282,17 @@ func refreshLoop(cfg *dlpconfig.Config, set *dlpproxy.Secrets, load func(*dlpcon
 }
 
 // reload reads the secret source once and atomically swaps the shared set.
-// On failure it keeps the current set and logs a warning (fail-safe).
+// On failure it keeps the current set and logs a warning (fail-safe). An
+// empty result without an error is also treated as a failure: an empty pass
+// store or vault must not disarm an already-armed proxy.
 func reload(cfg *dlpconfig.Config, set *dlpproxy.Secrets, load func(*dlpconfig.Config) ([]string, error), logger *log.Logger) {
 	fresh, err := load(cfg)
 	if err != nil {
 		logger.Printf("WARN: secret reload failed, keeping %d secrets: %v", set.Len(), err)
+		return
+	}
+	if len(fresh) == 0 && set.Len() > 0 {
+		logger.Printf("WARN: secret reload returned 0 secrets; keeping %d", set.Len())
 		return
 	}
 	set.Replace(fresh)
