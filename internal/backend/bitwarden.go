@@ -346,43 +346,74 @@ func (b *BitwardenBackend) Set(ctx context.Context, key, value string) error {
 	if err != nil {
 		return err
 	}
-	var items []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
+	var items []bwItem
 	if err := json.Unmarshal(out, &items); err != nil {
 		return fmt.Errorf("parse bw list items: %w", err)
 	}
-	id := ""
-	for _, it := range items {
-		if it.Name == key {
-			id = it.ID
-			break
+	// parseBWItems は同名アイテムを後勝ちで解決する。Set も同じ item を
+	// 更新対象にしないと rotation が Resolve に反映されない。
+	idx := -1
+	for i := range items {
+		if items[i].Name == key {
+			idx = i
 		}
 	}
 
-	if id == "" {
+	if idx < 0 {
 		payload := setItemJSON(key, value)
 		if _, err := b.execBW(ctx, []string{"create", "item", payload}); err != nil {
 			return err
 		}
 	} else {
-		raw, err := b.execBW(ctx, []string{"get", "item", id})
+		item := items[idx]
+		raw, err := b.execBW(ctx, []string{"get", "item", item.ID})
 		if err != nil {
 			return err
 		}
-		updated, err := setValueField(raw, value)
+		var updated []byte
+		if item.Type == itemTypeLogin {
+			updated, err = setLoginPassword(raw, value)
+		} else {
+			updated, err = setValueField(raw, value)
+		}
 		if err != nil {
 			return err
 		}
 		payload := base64.StdEncoding.EncodeToString(updated)
-		if _, err := b.execBW(ctx, []string{"edit", "item", id, payload}); err != nil {
+		if _, err := b.execBW(ctx, []string{"edit", "item", item.ID, payload}); err != nil {
 			return err
 		}
 	}
 
 	// Refresh the cache so subsequent Resolve calls return the new value.
-	return b.loadLocked(ctx)
+	if err := b.loadLocked(ctx); err != nil {
+		return err
+	}
+	// Read-back: confirm that what Resolve now serves is the value we just
+	// wrote. A mismatch means the write landed in a field Resolve does not
+	// read, so report the rotation as failed instead of silently keeping the
+	// old (possibly leaked) secret.
+	if got, ok := b.cache[key]; !ok || got != value {
+		return fmt.Errorf("bitwarden: Set reported success but Resolve still returns the old value for %s", key)
+	}
+	return nil
+}
+
+// setLoginPassword replaces login.password in a bw item JSON while keeping the
+// rest of the login object intact. parseBWItems reads login.password for login
+// items, so Set must write there instead of adding a hidden "value" field.
+func setLoginPassword(raw []byte, value string) ([]byte, error) {
+	var item map[string]any
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return nil, fmt.Errorf("parse bw item: %w", err)
+	}
+	login, _ := item["login"].(map[string]any)
+	if login == nil {
+		login = map[string]any{}
+	}
+	login["password"] = value
+	item["login"] = login
+	return json.Marshal(item)
 }
 
 // setItemJSON builds the base64-encoded JSON payload for a new secureNote
