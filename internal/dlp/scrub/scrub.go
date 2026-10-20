@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/ikkun1222/trustless/internal/dlp/redact"
 )
@@ -430,15 +431,43 @@ func scrubColumn(path, table, col string, secrets []string, minLen int) (int, er
 // os.ReadFile/os.WriteFile pair held the whole file in memory: --backup on
 // opencode.db (1.9 GB) pushed RSS above 2.4 GB on every daily run, an OOM risk
 // on the 11 GB host.
+//
+// O_NOFOLLOW is required: the DB directory may be writable by another party
+// that can plant <db>.bak as a symlink, and following it would let them have
+// operator-privileged writes land in any file the operator can open. The
+// fstat check rejects non-regular files and hardlinks too. Truncation happens
+// only after those checks, so a refusal never destroys the target.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("refusing to write through a symlink at %s", dst)
+		}
 		return err
+	}
+	st, err := out.Stat()
+	if err != nil {
+		_ = out.Close()
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		_ = out.Close()
+		return fmt.Errorf("refusing to write to non-regular file at %s", dst)
+	}
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok && sys.Nlink != 1 {
+		_ = out.Close()
+		return fmt.Errorf("refusing to write to file with %d links at %s", sys.Nlink, dst)
+	}
+	if st.Size() != 0 {
+		if err := out.Truncate(0); err != nil {
+			_ = out.Close()
+			return err
+		}
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		_ = out.Close()

@@ -795,6 +795,53 @@ INSERT INTO %s (id, content) VALUES (1, '%s');`,
 	}
 }
 
+// TestScrubDB_BackupRefusesSymlink guards the second confirmed finding: with
+// <db>.bak pre-created as a symlink, the backup used to follow it and overwrite
+// the link target with the database bytes while returning nil.
+func TestScrubDB_BackupRefusesSymlink(t *testing.T) {
+	path := newTestDB(t)
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	const original = "do not touch"
+	if err := os.WriteFile(victim, []byte(original), 0o600); err != nil {
+		t.Fatalf("victim: %v", err)
+	}
+	bak := path + ".bak"
+	if err := os.Symlink(victim, bak); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := ScrubDB(path, []string{"sk-supersecret1234567890"}, 8, true)
+	if err == nil {
+		t.Fatal("ScrubDB followed a symlinked .bak and returned nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") || !strings.Contains(err.Error(), bak) {
+		t.Fatalf("error must name the symlink path %q: %v", bak, err)
+	}
+	data, readErr := os.ReadFile(victim)
+	if readErr != nil {
+		t.Fatalf("read victim: %v", readErr)
+	}
+	if string(data) != original {
+		t.Fatalf("victim was modified through the symlink: %q", data)
+	}
+}
+
+// TestScrubDB_BackupMode0600 verifies the ordinary backup keeps its 0600 mode.
+func TestScrubDB_BackupMode0600(t *testing.T) {
+	path := newTestDB(t)
+	if _, err := ScrubDB(path, []string{"sk-supersecret1234567890"}, 8, true); err != nil {
+		t.Fatalf("ScrubDB with backup: %v", err)
+	}
+	st, err := os.Stat(path + ".bak")
+	if err != nil {
+		t.Fatalf("stat backup: %v", err)
+	}
+	if got := st.Mode().Perm(); got != 0o600 {
+		t.Fatalf("backup mode = %o, want 600", got)
+	}
+}
+
 // TestScrubDBPatterns_MixedColumnWithNumericFirstRow は、先頭行が数値の列に
 // ある TEXT の秘密も走査・マスクされることを検証する。旧 isTextColumn は
 // 先頭行の typeof だけで列ごと除外していたため、こうした行は素通りしていた。
