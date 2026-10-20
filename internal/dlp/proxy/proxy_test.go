@@ -1,11 +1,15 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -101,6 +105,104 @@ func newTestSetup(t *testing.T, secrets []string, minLen int) (string, func() []
 		return out
 	}
 	return proxyServer.URL, getReceived
+}
+
+// TestProxy_LogPathCannotForgeLines is the regression for log-line forgery:
+// a percent-encoded newline in the request path must be escaped (%q) so a
+// single request produces a single log line.
+func TestProxy_LogPathCannotForgeLines(t *testing.T) {
+	const secret = "sk-log-injection-secret-1234567890"
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxyServer := httptest.NewServer(New(Options{
+		Secrets:      NewSecrets([]string{secret}),
+		MinSecretLen: 8,
+		UpstreamURL:  upstream.URL,
+		Logger:       logger,
+	}))
+	t.Cleanup(proxyServer.Close)
+
+	path := "/v1/chat%0A2026/10/20%2006:00:31%20dlp-proxy:%20reloaded%200%20secrets"
+	req, err := http.NewRequest(http.MethodPost, proxyServer.URL+path,
+		strings.NewReader(`{"content":"`+secret+`"}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	logs := buf.String()
+	if n := strings.Count(logs, "\n"); n != 1 {
+		t.Fatalf("expected exactly 1 log line, got %d:\n%s", n, logs)
+	}
+	if !strings.Contains(logs, `\n`) {
+		t.Fatalf("expected the newline to be escaped as \\n, got: %s", logs)
+	}
+}
+
+// TestProxy_AuditHostUsesConfiguredUpstream is the regression for audit host
+// forgery: an absolute-form request target must not dictate the recorded
+// dlp.redact Host, which is the configured upstream host.
+func TestProxy_AuditHostUsesConfiguredUpstream(t *testing.T) {
+	const secret = "sk-audit-host-secret-1234567890"
+	const forgedHost = "audit-forged.example"
+
+	sink := &testSink{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxyServer := New(Options{
+		Secrets:      NewSecrets([]string{secret}),
+		MinSecretLen: 8,
+		UpstreamURL:  upstream.URL,
+		Audit:        sink,
+	})
+	handlerServer := httptest.NewServer(proxyServer)
+	t.Cleanup(handlerServer.Close)
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(handlerServer.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	body := `{"content":"` + secret + `"}`
+	fmt.Fprintf(conn, "POST http://%s/v1/chat HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		forgedHost, forgedHost, len(body), body)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	resp.Body.Close()
+
+	evs := sink.events()
+	if len(evs) != 1 {
+		t.Fatalf("expected 1 audit event, got %d: %+v", len(evs), evs)
+	}
+	wantHost := strings.TrimPrefix(upstream.URL, "http://")
+	if evs[0].Host != wantHost {
+		t.Fatalf("audit Host = %q, want configured upstream %q", evs[0].Host, wantHost)
+	}
+	if evs[0].Host == forgedHost {
+		t.Fatalf("audit Host was controlled by the caller: %q", evs[0].Host)
+	}
 }
 
 func TestProxy_MasksSecretInBody(t *testing.T) {
