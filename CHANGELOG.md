@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Rebuild with Go 1.27.4 to fix GO-2026-6859 (`CVE-2026-97054`): a header race in
+  `net/http` `MaxBytesReader` that can crash an HTTP/1 server. The `go` directive
+  in `go.mod`, `.tool-versions`, and both CI workflows are raised to 1.27.4, so
+  release binaries are built with the fixed standard library.
+
 ### Fixed
 
 - `dlp scrub-db` / `dlp scrub-text`: run SQLite statements from stdin instead of
